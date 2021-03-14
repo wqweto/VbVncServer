@@ -1,0 +1,6 @@
+[submodule "lib/VBD3D11"]
+	path = lib/VBD3D11
+	url = https://github.com/wqweto/VBD3D11
+[submodule "lib/VbAsyncSocket"]
+	path = lib/VbAsyncSocket
+	url = https://github.com/wqweto/VbAsyncSocket

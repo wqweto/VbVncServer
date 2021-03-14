@@ -1,0 +1,10 @@
+# Auto detect text files and perform LF normalization
+* text eol=crlf
+
+*.dll binary
+*.cmp binary
+*.cobj binary
+*.pfx binary
+*.exe binary
+*.pdf binary
+*.tlb binary
