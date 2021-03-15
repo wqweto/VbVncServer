@@ -21,7 +21,7 @@ Private m_oServer As cVncServer
 
 Private Sub Form_Load()
     Set m_oServer = New cVncServer
-    If Not m_oServer.Init() Then
+    If Not m_oServer.Init("0.0.0.0", 5900) Then
         MsgBox m_oServer.LastError, vbExclamation
     End If
 End Sub

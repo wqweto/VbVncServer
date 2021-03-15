@@ -144,6 +144,7 @@ Private Type UcsClientSetEncodingsType
     MessageType         As Integer          ' ucsMsgSetEncodings = 2
     NumberOfEncodings   As Integer
     EncodingType()      As Long
+    HasCursorPseudoEncoding As Boolean
 End Type
 Private Const UcsClientSetEncodingsSize As Long = 4
 
@@ -223,7 +224,6 @@ Private Type UcsBuffer
     Data()              As Byte
     Pos                 As Long
     Size                As Long
-    Actual              As Long
 End Type
 
 Private Type UcsDuplicationContext
@@ -273,7 +273,6 @@ Private m_uClientPointer        As UcsClientPointerEventType
 Private m_uClientCutText        As UcsClientCutTextType
 Private m_uCtx                  As UcsDuplicationContext
 Private m_uFrame                As UcsCaptureFrame
-Private m_uFrameBuffer          As UcsBuffer
 Private m_pTimer                As IUnknown
 
 '=========================================================================
@@ -333,11 +332,10 @@ End Function
 Private Function pvSendSecurityType(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     Const SecurityResultOk As Long = 0
     
-    uOutput.Size = 0
     pvBufferWriteLong uOutput, 1
     pvBufferWriteLong uOutput, ucsAuthNone
     pvBufferWriteLong uOutput, SecurityResultOk, Size:=4
-    If oSocket.Send(VarPtr(uOutput.Data(0)), uOutput.Size) < 0 Then
+    If Not pvBufferSendAsync(uOutput, oSocket) Then
         GoTo QH
     End If
     '--- succees
@@ -365,13 +363,13 @@ Private Function pvSendServerInit(uCtx As UcsDuplicationContext, uOutput As UcsB
         End With
         .NameLength = pvNetworkLong(Len(STR_APP_NAME))
     End With
-    m_uClientPixelFormat.PixelFormat = uInit.ServerPixelFormat
-    uOutput.Size = 0
     pvBufferWriteBlob uOutput, VarPtr(uInit), UcsServerInitSize
     pvBufferWriteArray uOutput, StrConv(STR_APP_NAME, vbFromUnicode)
-    If oSocket.Send(VarPtr(uOutput.Data(0)), uOutput.Size) < 0 Then
+    If Not pvBufferSendAsync(uOutput, oSocket) Then
         GoTo QH
     End If
+    '--- save as default pixel format
+    m_uClientPixelFormat.PixelFormat = uInit.ServerPixelFormat
     '--- succees
     pvSendServerInit = True
 QH:
@@ -379,12 +377,15 @@ End Function
 
 Private Function pvSendEmptyFramebufferUpdate(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     Dim uUpdate         As UcsServerFramebufferUpdateType
+    Dim uRectangle      As UcsServerRectangleType
     
-    uOutput.Size = 0
-    uUpdate.MessageType = ucsMsgFramebufferUpdate
-    uUpdate.NumberOfRectangles = pvNetworkShort(0)
+    With uUpdate
+        .MessageType = ucsMsgFramebufferUpdate
+        .NumberOfRectangles = pvNetworkShort(1)
+    End With
     pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
-    If Not oSocket.SyncSend(VarPtr(uOutput.Data(0)), uOutput.Size) Then
+    pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
+    If Not pvBufferSendAsync(uOutput, oSocket) Then
         GoTo QH
     End If
     '--- success
@@ -398,13 +399,11 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
     
     On Error GoTo EH
     With uInput
-'        Debug.Print DesignDumpArray(.Data, .Pos, .Size)
         Select Case .Data(.Pos)
         Case ucsMsgSetPixelFormat
             If .Size - .Pos < UcsClientSetPixelFormatSize Then
                 GoTo QH
             End If
-'            Debug.Print "ucsMsgSetPixelFormat", Timer
             Call CopyMemory(m_uClientPixelFormat, .Data(.Pos), UcsClientSetPixelFormatSize)
             With m_uClientPixelFormat.PixelFormat
                 .RedMax = pvNetworkShort(.RedMax)
@@ -412,12 +411,11 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
                 .BlueMax = pvNetworkShort(.BlueMax)
             End With
             .Pos = .Pos + UcsClientSetPixelFormatSize
-            Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
+            TimerProc
         Case ucsMsgSetEncodings
             If .Size - .Pos < UcsClientSetEncodingsSize Then
                 GoTo QH
             End If
-'            Debug.Print "ucsMsgSetEncodings", Timer
             Call CopyMemory(m_uClientEncodings, .Data(.Pos), UcsClientSetEncodingsSize)
             With m_uClientEncodings
                 .NumberOfEncodings = pvNetworkShort(.NumberOfEncodings)
@@ -429,19 +427,24 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
                 ReDim m_uClientEncodings.EncodingType(0 To m_uClientEncodings.NumberOfEncodings - 1) As Long
                 Call CopyMemory(m_uClientEncodings.EncodingType(0), .Data(.Pos + UcsClientSetEncodingsSize), m_uClientEncodings.NumberOfEncodings * 4)
                 With m_uClientEncodings
+                    .HasCursorPseudoEncoding = False
                     For lIdx = 0 To .NumberOfEncodings - 1
                         .EncodingType(lIdx) = pvNetworkLong(.EncodingType(lIdx))
+                        If .EncodingType(lIdx) = ucsEncCursorPseudoEncoding Then
+                            .HasCursorPseudoEncoding = True
+                        End If
                     Next
                 End With
             End If
             .Pos = .Pos + UcsClientSetEncodingsSize + m_uClientEncodings.NumberOfEncodings * 4
             Set m_pTimer = Nothing
-            pvSendEmptyFramebufferUpdate m_uSendBuffer, m_oSocket
+            If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer, m_oSocket) Then
+                GoTo QH
+            End If
         Case ucsMsgFramebufferUpdateRequest
             If .Size - .Pos < UcsClientFramebufferUpdateRequestSize Then
                 GoTo QH
             End If
-'            Debug.Print "ucsMsgFramebufferUpdateRequest", Timer
             Call CopyMemory(m_uClientFramebufferUpdate, .Data(.Pos), UcsClientFramebufferUpdateRequestSize)
             With m_uClientFramebufferUpdate
                 .XPosition = pvNetworkShort(.XPosition)
@@ -450,7 +453,7 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
                 .Height = pvNetworkShort(.Height)
             End With
             .Pos = .Pos + UcsClientFramebufferUpdateRequestSize
-            Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
+            TimerProc
         Case ucsMsgKeyEvent
             If .Size - .Pos < UcsClientKeyEventSize Then
                 GoTo QH
@@ -498,15 +501,17 @@ EH:
 End Function
 
 Public Function TimerProc() As Long
-    If pvCaptureFrame(m_uCtx, m_uFrame, m_uFrameBuffer) Then
-        m_oSocket.SyncSend VarPtr(m_uFrameBuffer.Data(0)), m_uFrameBuffer.Size
+    If m_uSendBuffer.Size = 0 Then
+        If pvCaptureFrame(m_uCtx, m_uFrame, m_uSendBuffer, m_oSocket) Then
+            pvBufferSendAsync m_uSendBuffer, m_oSocket
+        End If
     End If
     Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
 End Function
 
 '= desktop duplication ===================================================
 
-Private Function pvCaptireEnumDevices() As Collection
+Private Function pvCaptureEnumDevices() As Collection
     Dim pFactory        As IDXGIFactory1
     Dim lIdx            As Long
     Dim lJdx            As Long
@@ -515,7 +520,7 @@ Private Function pvCaptireEnumDevices() As Collection
     Dim uAdapterDesc    As DXGI_ADAPTER_DESC
     Dim uOutputDesc     As DXGI_OUTPUT_DESC
     
-    Set pvCaptireEnumDevices = New Collection
+    Set pvCaptureEnumDevices = New Collection
     Set pFactory = CreateDXGIFactory1(IIDFromString(szIID_IDXGIFactory1))
     For lIdx = 0 To 100
         If pFactory.EnumAdapters1(lIdx, pAdapter) < 0 Then
@@ -528,7 +533,7 @@ Private Function pvCaptireEnumDevices() As Collection
                 Exit For
             End If
             pOutput.GetDesc uOutputDesc
-            pvCaptireEnumDevices.Add Array(Replace(uOutputDesc.DeviceName, vbNullChar, vbNullString), _
+            pvCaptureEnumDevices.Add Array(Replace(uOutputDesc.DeviceName, vbNullChar, vbNullString), _
                 Replace(uAdapterDesc.Description, vbNullChar, vbNullString))
         Next
     Next
@@ -660,7 +665,7 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCaptureFrame, uOutput As UcsBuffer) As Boolean
+Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCaptureFrame, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     Const FUNC_NAME     As String = "pvCaptureFrame"
     Const SIZE_OUTDUPL_MOVE_RECT As Long = 24
     Const SIZE_RECT     As Long = 16
@@ -677,6 +682,7 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
     Dim uPointerInfo    As DXGI_OUTDUPL_POINTER_SHAPE_INFO
     Dim lLeft           As Long
     Dim lBytesPerPixel  As Long
+    Dim lBufferSize     As Long
     Dim baRow()         As Byte
     Dim baRedLut()      As Byte
     Dim baGreenLut()    As Byte
@@ -685,7 +691,6 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
     Dim uRectangle      As UcsServerRectangleType
 
     On Error GoTo EH
-    uOutput.Size = 0
     With uCtx
         If .Duplication Is Nothing Then
             GoTo QH
@@ -739,8 +744,9 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
             uCapture.PointerPlacement.Left = uFrameInfo.PointerPosition.Position.X
             uCapture.PointerPlacement.Top = uFrameInfo.PointerPosition.Position.Y
         End If
-        '--- copy desktop
+        '--- send desktop
         lBytesPerPixel = m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8
+        lBufferSize = oSocket.SockOpt(ucsSsoSendBuffer)
         If lBytesPerPixel = 1 Then
             ReDim baRow(0 To .Width * 4 - 1) As Byte
             pvCapturePrepareLut baRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
@@ -748,32 +754,43 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
             pvCapturePrepareLut baBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
         End If
         If .InSystemMemory Then
-            uUpdate.MessageType = ucsMsgFramebufferUpdate
-            uUpdate.NumberOfRectangles = pvNetworkShort(1)
+            With uUpdate
+                .MessageType = ucsMsgFramebufferUpdate
+                .NumberOfRectangles = pvNetworkShort(1)
+            End With
             pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
             With uRectangle
                 .XPosition = pvNetworkShort(0)
                 .YPosition = pvNetworkShort(0)
                 .Width = pvNetworkShort(uCtx.Width)
                 .Height = pvNetworkShort(uCtx.Height)
-                uRectangle.EncodingType = pvNetworkLong(ucsEncRaw)
+                .EncodingType = pvNetworkLong(ucsEncRaw)
             End With
             pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
             .Duplication.MapDesktopSurface uMapRect
-            For lIdx = 0 To .Height - 1
-                Select Case lBytesPerPixel
-                Case 1
-                    Call CopyMemory(baRow(0), ByVal uMapRect.pBits + lIdx * uMapRect.Pitch, .Width * 4)
-                    For lX = 0 To .Width
-                        baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
-                    Next
-                    pvBufferWriteBlob uOutput, VarPtr(baRow(0)), .Width
-                Case 4
-                    pvBufferWriteBlob uOutput, uMapRect.pBits + lIdx * uMapRect.Pitch, .Width * 4
-                Case Else
-                    pvBufferWriteBlob uOutput, 0, .Height * .Width * lBytesPerPixel
-                End Select
-            Next
+            Select Case lBytesPerPixel
+            Case 1, 4
+                For lIdx = 0 To .Height - 1
+                    If lBytesPerPixel = 1 Then
+                        Call CopyMemory(baRow(0), ByVal uMapRect.pBits + lIdx * uMapRect.Pitch, .Width * 4)
+                        For lX = 0 To .Width
+                            baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
+                        Next
+                        pvBufferWriteBlob uOutput, VarPtr(baRow(0)), .Width
+                    Else
+                        pvBufferWriteBlob uOutput, uMapRect.pBits + lIdx * uMapRect.Pitch, .Width * 4
+                    End If
+                    If uOutput.Size >= uOutput.Pos + lBufferSize Then
+                        If Not oSocket.HasPendingEvent Then
+                            If Not pvBufferSendAsync(uOutput, oSocket) Then
+                                GoTo QH
+                            End If
+                        End If
+                    End If
+                Next
+            Case Else
+                pvBufferWriteBlob uOutput, 0, .Height * .Width * lBytesPerPixel
+            End Select
             .Duplication.UnMapDesktopSurface
         ElseIf Not pTex Is Nothing Then
             .Context.CopyResource pTex, .DesktopResource
@@ -781,10 +798,12 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
             If hResult < 0 Then
                 Err.Raise hResult, "ID3D11DeviceContext.Map"
             End If
-            uUpdate.MessageType = ucsMsgFramebufferUpdate
-            uUpdate.NumberOfRectangles = pvNetworkShort(uCapture.NumDirtyRects)
-            pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
             For lIdx = 0 To uCapture.NumDirtyRects - 1
+                With uUpdate
+                    .MessageType = ucsMsgFramebufferUpdate
+                    .NumberOfRectangles = pvNetworkShort(1)
+                End With
+                pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
                 With uRectangle
                     .XPosition = pvNetworkShort(uCapture.DirtyRects(lIdx).Left)
                     .YPosition = pvNetworkShort(uCapture.DirtyRects(lIdx).Top)
@@ -795,17 +814,24 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
                 pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
                 lLeft = uCapture.DirtyRects(lIdx).Left
                 Select Case lBytesPerPixel
-                Case 1
+                Case 1, 4
                     For lY = uCapture.DirtyRects(lIdx).Top To uCapture.DirtyRects(lIdx).Bottom - 1
-                        Call CopyMemory(baRow(0), ByVal uResource.pData + lY * uResource.RowPitch + lLeft * 4, (uCapture.DirtyRects(lIdx).Right - lLeft) * 4)
-                        For lX = 0 To uCapture.DirtyRects(lIdx).Right - lLeft - 1
-                            baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
-                        Next
-                        pvBufferWriteBlob uOutput, VarPtr(baRow(0)), uCapture.DirtyRects(lIdx).Right - lLeft
-                    Next
-                Case 4
-                    For lY = uCapture.DirtyRects(lIdx).Top To uCapture.DirtyRects(lIdx).Bottom - 1
-                        pvBufferWriteBlob uOutput, uResource.pData + lY * uResource.RowPitch + lLeft * 4, (uCapture.DirtyRects(lIdx).Right - lLeft) * 4
+                        If lBytesPerPixel = 1 Then
+                            Call CopyMemory(baRow(0), ByVal uResource.pData + lY * uResource.RowPitch + lLeft * 4, (uCapture.DirtyRects(lIdx).Right - lLeft) * 4)
+                            For lX = 0 To uCapture.DirtyRects(lIdx).Right - lLeft - 1
+                                baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
+                            Next
+                            pvBufferWriteBlob uOutput, VarPtr(baRow(0)), uCapture.DirtyRects(lIdx).Right - lLeft
+                        Else
+                            pvBufferWriteBlob uOutput, uResource.pData + lY * uResource.RowPitch + lLeft * 4, (uCapture.DirtyRects(lIdx).Right - lLeft) * 4
+                        End If
+                        If uOutput.Size >= uOutput.Pos + lBufferSize Then
+                            If Not oSocket.HasPendingEvent Then
+                                If Not pvBufferSendAsync(uOutput, oSocket) Then
+                                    GoTo QH
+                                End If
+                            End If
+                        End If
                     Next
                 Case Else
                     pvBufferWriteBlob uOutput, 0, (uCapture.DirtyRects(lIdx).Bottom - uCapture.DirtyRects(lIdx).Top) * (uCapture.DirtyRects(lIdx).Right - lLeft) * lBytesPerPixel
@@ -814,18 +840,17 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
             .Context.Unmap pTex, 0
             uResource.pData = 0
         End If
-        If lBytesPerPixel <> m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8 Then
-            GoTo QH
-        End If
-        '--- copy pointer
-        If uFrameInfo.PointerShapeBufferSize > 0 And lBytesPerPixel = 4 Then
+        '--- send pointer
+        If uFrameInfo.PointerShapeBufferSize > 0 And m_uClientEncodings.HasCursorPseudoEncoding Then
             If uPointerInfo.Type <> DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
                 uPointerInfo.Height = uPointerInfo.Height \ 2
             End If
             Select Case uPointerInfo.Type
             Case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR
-                uUpdate.MessageType = ucsMsgFramebufferUpdate
-                uUpdate.NumberOfRectangles = pvNetworkShort(1)
+                With uUpdate
+                    .MessageType = ucsMsgFramebufferUpdate
+                    .NumberOfRectangles = pvNetworkShort(1)
+                End With
                 pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
                 With uRectangle
                     .XPosition = pvNetworkShort(uPointerInfo.HotSpot.X)
@@ -874,8 +899,11 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
             uCapture.PointerPlacement.Bottom = uPointerInfo.Height
         End If
     End With
+    If uOutput.Size = 0 Then
+        GoTo QH
+    End If
     '--- success
-    pvCaptureFrame = (uOutput.Size > 0)
+    pvCaptureFrame = True
 QH:
     If uResource.pData <> 0 Then
         uCtx.Context.Unmap pTex, 0
@@ -948,6 +976,38 @@ Private Sub pvBufferWriteLong(uOutput As UcsBuffer, ByVal lValue As Long, Option
         End If
     End With
 End Sub
+
+Private Function pvBufferSendAsync(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+    Const FUNC_NAME     As String = "pvBufferSendAsync"
+    Dim lBytes          As Long
+    Dim lBufferSize     As Long
+    
+    On Error GoTo EH
+    lBufferSize = oSocket.SockOpt(ucsSsoSendBuffer)
+    Do While uOutput.Pos < uOutput.Size
+        lBytes = IIf(uOutput.Size - uOutput.Pos > lBufferSize, lBufferSize, uOutput.Size - uOutput.Pos)
+        lBytes = oSocket.Send(VarPtr(uOutput.Data(uOutput.Pos)), lBytes)
+        If oSocket.HasPendingEvent Then
+            Exit Do
+        ElseIf lBytes < 0 Then
+            GoTo QH
+        Else
+            uOutput.Pos = uOutput.Pos + lBytes
+        End If
+    Loop
+    If uOutput.Pos > 0 Then
+        If uOutput.Pos >= uOutput.Size Then
+            uOutput.Pos = 0
+            uOutput.Size = 0
+        End If
+    End If
+    '--- success
+    pvBufferSendAsync = True
+QH:
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+End Function
 
 '= arrays helpers ========================================================
 
@@ -1069,7 +1129,7 @@ Private Sub m_oSocket_OnReceive()
                 Case ucsStaExpectClientInit
                     '--- ignore shared flag
                     .Pos = .Pos + 1
-                    vElem = pvCaptireEnumDevices().Item(1)
+                    vElem = pvCaptureEnumDevices().Item(1)
                     If Not pvCaptureInit(m_uCtx, vElem(0), 1) Then
                         GoTo QH
                     End If
@@ -1100,6 +1160,21 @@ Private Sub m_oSocket_OnReceive()
             End If
         End With
     Loop
+QH:
+    Exit Sub
+EH:
+    PrintError FUNC_NAME
+End Sub
+
+Private Sub m_oSocket_OnSend()
+    Const FUNC_NAME     As String = "m_oSocket_OnSend"
+    
+    On Error GoTo EH
+    If m_uSendBuffer.Size > m_uSendBuffer.Pos Then
+        If Not pvBufferSendAsync(m_uSendBuffer, m_oSocket) Then
+            GoTo QH
+        End If
+    End If
 QH:
     Exit Sub
 EH:
@@ -1217,3 +1292,4 @@ End Property
 Private Property Let pvThunkGlobalData(sKey As String, ByVal lValue As Long)
     Call SetEnvironmentVariable("_MST_GLOBAL" & GetCurrentProcessId() & "_" & sKey, lValue)
 End Property
+
