@@ -70,6 +70,9 @@ Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnviron
 ' Protocol enums and types
 '=========================================================================
 
+Private Const STR_CLIENT_MSG_CAPABILITIES As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
+Private Const STR_SERVER_MSG_CAPABILITIES As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
+
 Private Enum UcsRfbProtocolStateEnum
     ucsStaNone
     ucsStaExpectProtocolVersion
@@ -82,6 +85,7 @@ Private Enum UcsRfbAutheticationEnum
     ucsAuthInvalid = 0
     ucsAuthNone = 1
     ucsAuthVnc = 2
+    ucsAuthTight = 16
 End Enum
 
 Private Enum UcsRfbMessageEnum
@@ -92,11 +96,22 @@ Private Enum UcsRfbMessageEnum
     ucsMsgKeyEvent = 4
     ucsMsgPointerEvent = 5
     ucsMsgClientCutText = 6
+    ucsMsgFileListRequest = 130
+    ucsMsgFileDownloadRequest = 131
+    ucsMsgFileUploadRequest = 132
+    ucsMsgFileUploadData = 133
+    ucsMsgFileDownloadCancel = 134
+    ucsMsgFileUploadFailed = 135
+    ucsMsgFileCreateDirectoryRequest = 136
     '--- server-side
     ucsMsgFramebufferUpdate = 0
     ucsMsgSetColorMapEntries = 1
     ucsMsgBell = 2
     ucsMsgServerCutText = 3
+    ucsMsgFileListData = 130
+    ucsMsgFileDownloadData = 131
+    ucsMsgFileUploadCancel = 132
+    ucsMsgFileDownloadFailed = 133
 End Enum
 
 Private Enum UcsRdfEncodingEnum
@@ -245,11 +260,13 @@ Private Type UcsCaptureFrame
     MoveRects()         As DXGI_OUTDUPL_MOVE_RECT
     NumDirtyRects       As Long
     DirtyRects()        As D3D11_RECT
+    DirtyBuffers()      As UcsBuffer
     PointerSize         As Long
     PointerShape()      As Byte
     PointerVisible      As Boolean
     PointerPlacement    As D3D11_RECT
     PointerHotspot      As D3D11_POINT
+    PointerShapeBufferSize As Long
 End Type
 
 '=========================================================================
@@ -502,8 +519,10 @@ End Function
 
 Public Function TimerProc() As Long
     If m_uSendBuffer.Size = 0 Then
-        If pvCaptureFrame(m_uCtx, m_uFrame, m_uSendBuffer, m_oSocket) Then
-            pvBufferSendAsync m_uSendBuffer, m_oSocket
+        If pvCaptureFrame(m_uCtx, m_uFrame) Then
+            If pvCaptureSend(m_uCtx, m_uFrame, m_uSendBuffer, m_oSocket) Then
+                pvBufferSendAsync m_uSendBuffer, m_oSocket
+            End If
         End If
     End If
     Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
@@ -665,30 +684,20 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCaptureFrame, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCaptureFrame) As Boolean
     Const FUNC_NAME     As String = "pvCaptureFrame"
     Const SIZE_OUTDUPL_MOVE_RECT As Long = 24
     Const SIZE_RECT     As Long = 16
     Dim hResult         As Long
     Dim lIdx            As Long
+    Dim lY              As Long
+    Dim lLeft           As Long
+    Dim lSize           As Long
+    Dim uFrameInfo      As DXGI_OUTDUPL_FRAME_INFO
+    Dim uPointerInfo    As DXGI_OUTDUPL_POINTER_SHAPE_INFO
+    Dim pTex            As ID3D11Texture2D
     Dim uResource       As D3D11_MAPPED_SUBRESOURCE
     Dim uMapRect        As DXGI_MAPPED_RECT
-    Dim lSize           As Long
-    Dim lX              As Long
-    Dim lY              As Long
-    Dim pTex            As ID3D11Texture2D
-    Dim uFrameInfo      As DXGI_OUTDUPL_FRAME_INFO
-    Dim aMask(0 To 7)   As Byte
-    Dim uPointerInfo    As DXGI_OUTDUPL_POINTER_SHAPE_INFO
-    Dim lLeft           As Long
-    Dim lBytesPerPixel  As Long
-    Dim lBufferSize     As Long
-    Dim baRow()         As Byte
-    Dim baRedLut()      As Byte
-    Dim baGreenLut()    As Byte
-    Dim baBlueLut()     As Byte
-    Dim uUpdate         As UcsServerFramebufferUpdateType
-    Dim uRectangle      As UcsServerRectangleType
 
     On Error GoTo EH
     With uCtx
@@ -718,7 +727,7 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
         If hResult < 0 Then
             GoTo QH
         End If
-        uCapture.NumMoveRects = lSize / SIZE_OUTDUPL_MOVE_RECT
+        uCapture.NumMoveRects = lSize \ SIZE_OUTDUPL_MOVE_RECT
         hResult = .Duplication.GetFrameDirtyRects((UBound(uCapture.DirtyRects) + 1) * SIZE_RECT, uCapture.DirtyRects(0), lSize)
         If hResult = DXGI_ERROR_MORE_DATA Then
             ReDim uCapture.DirtyRects(0 To lSize \ SIZE_RECT - 1) As D3D11_RECT
@@ -727,7 +736,10 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
         If hResult < 0 Then
             GoTo QH
         End If
-        uCapture.NumDirtyRects = lSize / SIZE_RECT
+        uCapture.NumDirtyRects = lSize \ SIZE_RECT
+        If uCapture.NumDirtyRects > 0 Then
+            ReDim uCapture.DirtyBuffers(0 To uCapture.NumDirtyRects - 1) As UcsBuffer
+        End If
         If uFrameInfo.PointerShapeBufferSize > 0 Then
             hResult = .Duplication.GetFramePointerShape((UBound(uCapture.PointerShape) + 1), uCapture.PointerShape(0), uCapture.PointerSize, uPointerInfo)
             If hResult = DXGI_ERROR_MORE_DATA Then
@@ -738,47 +750,115 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
                 GoTo QH
             End If
             uCapture.PointerHotspot = uPointerInfo.HotSpot
+            uCapture.PointerShapeBufferSize = uFrameInfo.PointerShapeBufferSize
         End If
         If uFrameInfo.LastMouseUpdateTime.LowPart <> 0 Or uFrameInfo.LastMouseUpdateTime.HighPart <> 0 Then
             uCapture.PointerVisible = (uFrameInfo.PointerPosition.Visible <> 0)
             uCapture.PointerPlacement.Left = uFrameInfo.PointerPosition.Position.X
             uCapture.PointerPlacement.Top = uFrameInfo.PointerPosition.Position.Y
         End If
+        If .InSystemMemory Then
+            .Duplication.MapDesktopSurface uMapRect
+            With uCapture
+                For lIdx = 0 To .NumDirtyRects - 1
+                    lLeft = .DirtyRects(lIdx).Left
+                    lSize = (.DirtyRects(lIdx).Right - lLeft) * 4
+                    '--- pre-allocate buffer
+                    pvBufferWriteBlob .DirtyBuffers(lIdx), 0, (.DirtyRects(lIdx).Bottom - .DirtyRects(lIdx).Top) * lSize
+                    .DirtyBuffers(lIdx).Size = 0
+                    '--- copy rows
+                    For lY = .DirtyRects(lIdx).Top To .DirtyRects(lIdx).Bottom - 1
+                        pvBufferWriteBlob .DirtyBuffers(lIdx), uMapRect.pBits + lY * uMapRect.Pitch + lLeft * 4, lSize
+                    Next
+                Next
+            End With
+            .Duplication.UnMapDesktopSurface
+        ElseIf Not pTex Is Nothing Then
+            .Context.CopyResource pTex, .DesktopResource
+            hResult = .Context.Map(pTex, 0, D3D11_MAP_READ, 0, uResource)
+            If hResult < 0 Then
+                Err.Raise hResult, "ID3D11DeviceContext.Map"
+            End If
+            With uCapture
+                For lIdx = 0 To .NumDirtyRects - 1
+                    lLeft = .DirtyRects(lIdx).Left
+                    lSize = (.DirtyRects(lIdx).Right - lLeft) * 4
+                    '--- pre-allocate buffer
+                    pvBufferWriteBlob .DirtyBuffers(lIdx), 0, (.DirtyRects(lIdx).Bottom - .DirtyRects(lIdx).Top) * lSize
+                    .DirtyBuffers(lIdx).Size = 0
+                    '--- copy rows
+                    For lY = .DirtyRects(lIdx).Top To .DirtyRects(lIdx).Bottom - 1
+                        pvBufferWriteBlob .DirtyBuffers(lIdx), uResource.pData + lY * uResource.RowPitch + lLeft * 4, lSize
+                    Next
+                Next
+            End With
+            .Context.Unmap pTex, 0
+            uResource.pData = 0
+        End If
+    End With
+    '--- success
+    pvCaptureFrame = True
+QH:
+    If uResource.pData <> 0 Then
+        uCtx.Context.Unmap pTex, 0
+    End If
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+End Function
+
+Private Function pvCaptureSend(uCtx As UcsDuplicationContext, uCapture As UcsCaptureFrame, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+    Const FUNC_NAME     As String = "pvCaptureSend"
+    Dim lIdx            As Long
+    Dim lX              As Long
+    Dim lY              As Long
+    Dim lSize           As Long
+    Dim aMask(0 To 7)   As Byte
+    Dim uPointerInfo    As DXGI_OUTDUPL_POINTER_SHAPE_INFO
+    Dim lBytesPerPixel  As Long
+    Dim lBufferSize     As Long
+    Dim baRow()         As Byte
+    Dim baRedLut()      As Byte
+    Dim baGreenLut()    As Byte
+    Dim baBlueLut()     As Byte
+    Dim uUpdate         As UcsServerFramebufferUpdateType
+    Dim uRectangle      As UcsServerRectangleType
+    
+    On Error GoTo EH
+    With uCapture
         '--- send desktop
         lBytesPerPixel = m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8
         lBufferSize = oSocket.SockOpt(ucsSsoSendBuffer)
         If lBytesPerPixel = 1 Then
-            ReDim baRow(0 To .Width * 4 - 1) As Byte
+            ReDim baRow(0 To uCtx.Width * 4 - 1) As Byte
             pvCapturePrepareLut baRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
             pvCapturePrepareLut baGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
             pvCapturePrepareLut baBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
         End If
-        If .InSystemMemory Then
+        For lIdx = 0 To .NumDirtyRects - 1
             With uUpdate
                 .MessageType = ucsMsgFramebufferUpdate
                 .NumberOfRectangles = pvNetworkShort(1)
             End With
             pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
-            With uRectangle
-                .XPosition = pvNetworkShort(0)
-                .YPosition = pvNetworkShort(0)
-                .Width = pvNetworkShort(uCtx.Width)
-                .Height = pvNetworkShort(uCtx.Height)
-                .EncodingType = pvNetworkLong(ucsEncRaw)
-            End With
+            uRectangle.XPosition = pvNetworkShort(.DirtyRects(lIdx).Left)
+            uRectangle.YPosition = pvNetworkShort(.DirtyRects(lIdx).Top)
+            uRectangle.Width = pvNetworkShort(.DirtyRects(lIdx).Right - .DirtyRects(lIdx).Left)
+            uRectangle.Height = pvNetworkShort(.DirtyRects(lIdx).Bottom - .DirtyRects(lIdx).Top)
+            uRectangle.EncodingType = pvNetworkLong(ucsEncRaw)
             pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
-            .Duplication.MapDesktopSurface uMapRect
+            lSize = (.DirtyRects(lIdx).Right - .DirtyRects(lIdx).Left) * 4
             Select Case lBytesPerPixel
             Case 1, 4
-                For lIdx = 0 To .Height - 1
+                For lY = 0 To .DirtyRects(lIdx).Bottom - .DirtyRects(lIdx).Top - 1
                     If lBytesPerPixel = 1 Then
-                        Call CopyMemory(baRow(0), ByVal uMapRect.pBits + lIdx * uMapRect.Pitch, .Width * 4)
-                        For lX = 0 To .Width
+                        Call CopyMemory(baRow(0), ByVal VarPtr(.DirtyBuffers(lIdx).Data(0)) + lY * lSize, lSize)
+                        For lX = 0 To .DirtyRects(lIdx).Right - .DirtyRects(lIdx).Left - 1
                             baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
                         Next
-                        pvBufferWriteBlob uOutput, VarPtr(baRow(0)), .Width
+                        pvBufferWriteBlob uOutput, VarPtr(baRow(0)), lSize \ 4
                     Else
-                        pvBufferWriteBlob uOutput, uMapRect.pBits + lIdx * uMapRect.Pitch, .Width * 4
+                        pvBufferWriteBlob uOutput, VarPtr(.DirtyBuffers(lIdx).Data(0)) + lY * lSize, lSize
                     End If
                     If uOutput.Size >= uOutput.Pos + lBufferSize Then
                         If Not oSocket.HasPendingEvent Then
@@ -787,61 +867,17 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
                             End If
                         End If
                     End If
+                    If oSocket.AvailableBytes > 0 Then
+                        m_oSocket_OnReceive
+                        Debug.Assert lBytesPerPixel = m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8
+                    End If
                 Next
             Case Else
-                pvBufferWriteBlob uOutput, 0, .Height * .Width * lBytesPerPixel
+                pvBufferWriteBlob uOutput, 0, (.DirtyRects(lIdx).Bottom - .DirtyRects(lIdx).Top) * (.DirtyRects(lIdx).Right - .DirtyRects(lIdx).Left) * lBytesPerPixel
             End Select
-            .Duplication.UnMapDesktopSurface
-        ElseIf Not pTex Is Nothing Then
-            .Context.CopyResource pTex, .DesktopResource
-            hResult = .Context.Map(pTex, 0, D3D11_MAP_READ, 0, uResource)
-            If hResult < 0 Then
-                Err.Raise hResult, "ID3D11DeviceContext.Map"
-            End If
-            For lIdx = 0 To uCapture.NumDirtyRects - 1
-                With uUpdate
-                    .MessageType = ucsMsgFramebufferUpdate
-                    .NumberOfRectangles = pvNetworkShort(1)
-                End With
-                pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
-                With uRectangle
-                    .XPosition = pvNetworkShort(uCapture.DirtyRects(lIdx).Left)
-                    .YPosition = pvNetworkShort(uCapture.DirtyRects(lIdx).Top)
-                    .Width = pvNetworkShort(uCapture.DirtyRects(lIdx).Right - uCapture.DirtyRects(lIdx).Left)
-                    .Height = pvNetworkShort(uCapture.DirtyRects(lIdx).Bottom - uCapture.DirtyRects(lIdx).Top)
-                    .EncodingType = pvNetworkLong(ucsEncRaw)
-                End With
-                pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
-                lLeft = uCapture.DirtyRects(lIdx).Left
-                Select Case lBytesPerPixel
-                Case 1, 4
-                    For lY = uCapture.DirtyRects(lIdx).Top To uCapture.DirtyRects(lIdx).Bottom - 1
-                        If lBytesPerPixel = 1 Then
-                            Call CopyMemory(baRow(0), ByVal uResource.pData + lY * uResource.RowPitch + lLeft * 4, (uCapture.DirtyRects(lIdx).Right - lLeft) * 4)
-                            For lX = 0 To uCapture.DirtyRects(lIdx).Right - lLeft - 1
-                                baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
-                            Next
-                            pvBufferWriteBlob uOutput, VarPtr(baRow(0)), uCapture.DirtyRects(lIdx).Right - lLeft
-                        Else
-                            pvBufferWriteBlob uOutput, uResource.pData + lY * uResource.RowPitch + lLeft * 4, (uCapture.DirtyRects(lIdx).Right - lLeft) * 4
-                        End If
-                        If uOutput.Size >= uOutput.Pos + lBufferSize Then
-                            If Not oSocket.HasPendingEvent Then
-                                If Not pvBufferSendAsync(uOutput, oSocket) Then
-                                    GoTo QH
-                                End If
-                            End If
-                        End If
-                    Next
-                Case Else
-                    pvBufferWriteBlob uOutput, 0, (uCapture.DirtyRects(lIdx).Bottom - uCapture.DirtyRects(lIdx).Top) * (uCapture.DirtyRects(lIdx).Right - lLeft) * lBytesPerPixel
-                End Select
-            Next
-            .Context.Unmap pTex, 0
-            uResource.pData = 0
-        End If
+        Next
         '--- send pointer
-        If uFrameInfo.PointerShapeBufferSize > 0 And m_uClientEncodings.HasCursorPseudoEncoding Then
+        If .PointerShapeBufferSize > 0 And m_uClientEncodings.HasCursorPseudoEncoding Then
             If uPointerInfo.Type <> DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
                 uPointerInfo.Height = uPointerInfo.Height \ 2
             End If
@@ -863,7 +899,7 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
                 Select Case lBytesPerPixel
                 Case 1
                     For lY = 0 To uPointerInfo.Height - 1
-                        Call CopyMemory(baRow(0), uCapture.PointerShape(lY * uPointerInfo.Pitch), uPointerInfo.Width * 4)
+                        Call CopyMemory(baRow(0), .PointerShape(lY * uPointerInfo.Pitch), uPointerInfo.Width * 4)
                         For lX = 0 To uPointerInfo.Width - 1
                             baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
                         Next
@@ -871,7 +907,7 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
                     Next
                 Case 4
                     For lY = 0 To uPointerInfo.Height - 1
-                        pvBufferWriteBlob uOutput, VarPtr(uCapture.PointerShape(lY * uPointerInfo.Pitch)), uPointerInfo.Width * 4
+                        pvBufferWriteBlob uOutput, VarPtr(.PointerShape(lY * uPointerInfo.Pitch)), uPointerInfo.Width * 4
                     Next
                 Case Else
                     pvBufferWriteBlob uOutput, 0, uPointerInfo.Height * uPointerInfo.Width * 4
@@ -887,27 +923,24 @@ Private Function pvCaptureFrame(uCtx As UcsDuplicationContext, uCapture As UcsCa
                 lIdx = uPointerInfo.Pitch * uPointerInfo.Height
                 For lY = 0 To uPointerInfo.Height - 1
                     For lX = 0 To uPointerInfo.Width - 1
-                        If (uCapture.PointerShape(lIdx + lY * uPointerInfo.Pitch + lX \ 8) And aMask(lX Mod 8)) <> 0 Then
-'                            Call CopyMemory(ByVal .PointerBitsPtr + (lY * uPointerInfo.Width + lX) * 4, BLACK_COLOR, 4)
+                        If (.PointerShape(lIdx + lY * uPointerInfo.Pitch + lX \ 8) And aMask(lX Mod 8)) <> 0 Then
+                            'Call CopyMemory(ByVal .PointerBitsPtr + (lY * uPointerInfo.Width + lX) * 4, BLACK_COLOR, 4)
                         End If
                     Next
                 Next
             Case Else
                 Debug.Print "uPointerInfo.Type=" & Hex(uPointerInfo.Type)
             End Select
-            uCapture.PointerPlacement.Right = uPointerInfo.Width
-            uCapture.PointerPlacement.Bottom = uPointerInfo.Height
+            .PointerPlacement.Right = uPointerInfo.Width
+            .PointerPlacement.Bottom = uPointerInfo.Height
         End If
     End With
     If uOutput.Size = 0 Then
         GoTo QH
     End If
     '--- success
-    pvCaptureFrame = True
+    pvCaptureSend = True
 QH:
-    If uResource.pData <> 0 Then
-        uCtx.Context.Unmap pTex, 0
-    End If
     Exit Function
 EH:
     PrintError FUNC_NAME
