@@ -4,3 +4,6 @@
 [submodule "lib/VbAsyncSocket"]
 	path = lib/VbAsyncSocket
 	url = https://github.com/wqweto/VbAsyncSocket
+[submodule "lib/ZipArchive"]
+	path = lib/ZipArchive
+	url = git@github.com:wqweto/ZipArchive.git

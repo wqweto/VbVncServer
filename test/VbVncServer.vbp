@@ -5,6 +5,7 @@ Form=Form1.frm
 Class=cVncServer; ..\src\cVncServer.cls
 Class=cAsyncSocket; ..\lib\VbAsyncSocket\src\cAsyncSocket.cls
 Module=mdGlobals; mdGlobals.bas
+Class=cZipArchive; ..\lib\ZipArchive\src\cZipArchive.cls
 IconForm="Form1"
 Startup="Form1"
 HelpFile=""
@@ -19,6 +20,7 @@ RevisionVer=0
 AutoIncrementVer=0
 ServerSupportFiles=0
 VersionCompanyName="Unicontsoft"
+CondComp="ZIP_INFLATE = 1 : ZIP_NOEXTRACT = 1"
 CompilationType=0
 OptimizationType=0
 FavorPentiumPro(tm)=0
