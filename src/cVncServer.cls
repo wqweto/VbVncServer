@@ -255,6 +255,14 @@ Private Type UcsDuplicationContext
     Stride              As Long
 End Type
 
+Private Type UcsCaptureTile
+    SrcIndex            As Long
+    Left                As Long
+    Top                 As Long
+    Width               As Long
+    Height              As Long
+End Type
+
 Private Type UcsCaptureFrame
     NumMoveRects        As Long
     MoveRects()         As DXGI_OUTDUPL_MOVE_RECT
@@ -267,6 +275,8 @@ Private Type UcsCaptureFrame
     PointerPlacement    As D3D11_RECT
     PointerHotspot      As D3D11_POINT
     PointerShapeBufferSize As Long
+    NumTiles            As Long
+    Tiles()             As UcsCaptureTile
 End Type
 
 '=========================================================================
@@ -518,7 +528,7 @@ EH:
 End Function
 
 Public Function TimerProc() As Long
-    If m_uSendBuffer.Size = 0 Then
+    If m_uSendBuffer.Size = 0 And m_uFrame.NumTiles = 0 Then
         If pvCaptureFrame(m_uCtx, m_uFrame) Then
             If pvCaptureSend(m_uCtx, m_uFrame, m_uSendBuffer, m_oSocket) Then
                 pvBufferSendAsync m_uSendBuffer, m_oSocket
@@ -807,6 +817,45 @@ EH:
     PrintError FUNC_NAME
 End Function
 
+Private Function pvCapturePrepareTiles(uCapture As UcsCaptureFrame) As Boolean
+    Const FUNC_NAME     As String = "pvCapturePrepareTiles"
+    Const TILE_SIZE     As Long = 256
+    Dim lIdx            As Long
+    Dim lWidth          As Long
+    Dim lHeight         As Long
+    Dim lX              As Long
+    Dim lY              As Long
+    
+    On Error GoTo EH
+    uCapture.NumTiles = 0
+    For lIdx = 0 To uCapture.NumDirtyRects - 1
+        With uCapture.DirtyRects(lIdx)
+            lWidth = .Right - .Left
+            lHeight = .Bottom - .Top
+        End With
+        For lY = 0 To lHeight Step TILE_SIZE
+            For lX = 0 To lWidth Step TILE_SIZE
+                If uCapture.NumTiles > UBound(uCapture.Tiles) Then
+                    ReDim Preserve uCapture.Tiles(0 To UBound(uCapture.Tiles) * 2 + 1) As UcsCaptureTile
+                End If
+                With uCapture.Tiles(uCapture.NumTiles)
+                    .SrcIndex = lIdx
+                    .Left = lX
+                    .Top = lY
+                    .Width = Clamp(lX + TILE_SIZE, , lWidth) - lX
+                    .Height = Clamp(lY + TILE_SIZE, , lHeight) - lY
+                End With
+                uCapture.NumTiles = uCapture.NumTiles + 1
+            Next
+        Next
+    Next
+    '--- success
+    pvCapturePrepareTiles = True
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+End Function
+
 Private Function pvCaptureSend(uCtx As UcsDuplicationContext, uCapture As UcsCaptureFrame, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     Const FUNC_NAME     As String = "pvCaptureSend"
     Dim lIdx            As Long
@@ -823,8 +872,13 @@ Private Function pvCaptureSend(uCtx As UcsDuplicationContext, uCapture As UcsCap
     Dim baBlueLut()     As Byte
     Dim uUpdate         As UcsServerFramebufferUpdateType
     Dim uRectangle      As UcsServerRectangleType
+    Dim lSrcIndex       As Long
+    Dim lPtr            As Long
     
     On Error GoTo EH
+    If Not pvCapturePrepareTiles(uCapture) Then
+        GoTo QH
+    End If
     With uCapture
         '--- send desktop
         lBytesPerPixel = m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8
@@ -835,30 +889,33 @@ Private Function pvCaptureSend(uCtx As UcsDuplicationContext, uCapture As UcsCap
             pvCapturePrepareLut baGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
             pvCapturePrepareLut baBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
         End If
-        For lIdx = 0 To .NumDirtyRects - 1
+        For lIdx = 0 To .NumTiles - 1
             With uUpdate
                 .MessageType = ucsMsgFramebufferUpdate
                 .NumberOfRectangles = pvNetworkShort(1)
             End With
             pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
-            uRectangle.XPosition = pvNetworkShort(.DirtyRects(lIdx).Left)
-            uRectangle.YPosition = pvNetworkShort(.DirtyRects(lIdx).Top)
-            uRectangle.Width = pvNetworkShort(.DirtyRects(lIdx).Right - .DirtyRects(lIdx).Left)
-            uRectangle.Height = pvNetworkShort(.DirtyRects(lIdx).Bottom - .DirtyRects(lIdx).Top)
+            lSrcIndex = .Tiles(lIdx).SrcIndex
+            uRectangle.XPosition = pvNetworkShort(.DirtyRects(lSrcIndex).Left + .Tiles(lIdx).Left)
+            uRectangle.YPosition = pvNetworkShort(.DirtyRects(lSrcIndex).Top + .Tiles(lIdx).Top)
+            uRectangle.Width = pvNetworkShort(.Tiles(lIdx).Width)
+            uRectangle.Height = pvNetworkShort(.Tiles(lIdx).Height)
             uRectangle.EncodingType = pvNetworkLong(ucsEncRaw)
             pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
-            lSize = (.DirtyRects(lIdx).Right - .DirtyRects(lIdx).Left) * 4
+            lSize = (.DirtyRects(lSrcIndex).Right - .DirtyRects(lSrcIndex).Left) * 4
+            lPtr = VarPtr(.DirtyBuffers(lSrcIndex).Data(0))
             Select Case lBytesPerPixel
             Case 1, 4
-                For lY = 0 To .DirtyRects(lIdx).Bottom - .DirtyRects(lIdx).Top - 1
+                For lY = .Tiles(lIdx).Top To .Tiles(lIdx).Top + .Tiles(lIdx).Height - 1
                     If lBytesPerPixel = 1 Then
-                        Call CopyMemory(baRow(0), ByVal VarPtr(.DirtyBuffers(lIdx).Data(0)) + lY * lSize, lSize)
-                        For lX = 0 To .DirtyRects(lIdx).Right - .DirtyRects(lIdx).Left - 1
+                        Debug.Assert IsBadReadPtr(lPtr + lY * lSize + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4) = 0
+                        Call CopyMemory(baRow(0), ByVal lPtr + lY * lSize + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4)
+                        For lX = 0 To .Tiles(lIdx).Width - 1
                             baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
                         Next
-                        pvBufferWriteBlob uOutput, VarPtr(baRow(0)), lSize \ 4
+                        pvBufferWriteBlob uOutput, VarPtr(baRow(0)), .Tiles(lIdx).Width
                     Else
-                        pvBufferWriteBlob uOutput, VarPtr(.DirtyBuffers(lIdx).Data(0)) + lY * lSize, lSize
+                        pvBufferWriteBlob uOutput, lPtr + lY * lSize + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4
                     End If
                     If uOutput.Size >= uOutput.Pos + lBufferSize Then
                         If Not oSocket.HasPendingEvent Then
@@ -869,11 +926,19 @@ Private Function pvCaptureSend(uCtx As UcsDuplicationContext, uCapture As UcsCap
                     End If
                     If oSocket.AvailableBytes > 0 Then
                         m_oSocket_OnReceive
-                        Debug.Assert lBytesPerPixel = m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8
+                        If lBytesPerPixel <> m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8 Then
+                            lBytesPerPixel = m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8
+                            If lBytesPerPixel = 1 Then
+                                ReDim baRow(0 To uCtx.Width * 4 - 1) As Byte
+                                pvCapturePrepareLut baRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
+                                pvCapturePrepareLut baGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
+                                pvCapturePrepareLut baBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
+                            End If
+                        End If
                     End If
                 Next
             Case Else
-                pvBufferWriteBlob uOutput, 0, (.DirtyRects(lIdx).Bottom - .DirtyRects(lIdx).Top) * (.DirtyRects(lIdx).Right - .DirtyRects(lIdx).Left) * lBytesPerPixel
+                pvBufferWriteBlob uOutput, 0, .Tiles(lIdx).Height * .Tiles(lIdx).Width * lBytesPerPixel
             End Select
         Next
         '--- send pointer
@@ -899,6 +964,7 @@ Private Function pvCaptureSend(uCtx As UcsDuplicationContext, uCapture As UcsCap
                 Select Case lBytesPerPixel
                 Case 1
                     For lY = 0 To uPointerInfo.Height - 1
+                        Debug.Assert IsBadReadPtr(VarPtr(.PointerShape(lY * uPointerInfo.Pitch)), uPointerInfo.Width * 4) = 0
                         Call CopyMemory(baRow(0), .PointerShape(lY * uPointerInfo.Pitch), uPointerInfo.Width * 4)
                         For lX = 0 To uPointerInfo.Width - 1
                             baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
@@ -914,6 +980,9 @@ Private Function pvCaptureSend(uCtx As UcsDuplicationContext, uCapture As UcsCap
                 End Select
                 lSize = uPointerInfo.Height * (uPointerInfo.Width + 7) \ 8
                 ReDim baRow(0 To lSize - 1) As Byte
+                For lIdx = 0 To UBound(baRow)
+                    baRow(lIdx) = &HFF
+                Next
                 pvBufferWriteBlob uOutput, VarPtr(baRow(0)), lSize
             Case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME
                 For lIdx = 0 To 7
@@ -934,6 +1003,7 @@ Private Function pvCaptureSend(uCtx As UcsDuplicationContext, uCapture As UcsCap
             .PointerPlacement.Right = uPointerInfo.Width
             .PointerPlacement.Bottom = uPointerInfo.Height
         End If
+        .NumTiles = 0
     End With
     If uOutput.Size = 0 Then
         GoTo QH
@@ -1170,6 +1240,7 @@ Private Sub m_oSocket_OnReceive()
                         ReDim .MoveRects(0 To 0) As DXGI_OUTDUPL_MOVE_RECT
                         ReDim .DirtyRects(0 To 0) As D3D11_RECT
                         ReDim .PointerShape(0 To 0) As Byte
+                        ReDim .Tiles(0 To 31) As UcsCaptureTile
                     End With
                     If Not pvSendServerInit(m_uCtx, m_uSendBuffer, m_oSocket) Then
                         m_eState = ucsStaNone
