@@ -343,6 +343,10 @@ End Sub
 ' Properties
 '=========================================================================
 
+Public Property Get Socket() As cAsyncSocket
+    Set Socket = m_oSocket
+End Property
+
 Public Property Get LastError() As String
     If Not m_oSocket Is Nothing Then
         LastError = m_oSocket.LastError
