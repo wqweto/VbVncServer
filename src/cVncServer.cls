@@ -35,10 +35,6 @@ Private Const GENERIC_READ                                  As Long = &H80000000
 Private Const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2    As Long = -4
 '--- for D3DKMTSetProcessSchedulingPriorityClass
 Private Const D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME       As Long = 5
-'--- for thunks
-Private Const MEM_COMMIT                    As Long = &H1000
-Private Const PAGE_EXECUTE_READWRITE        As Long = &H40
-Private Const SIGN_BIT                      As Long = &H80000000
 '--- for mouse_event
 Private Const MOUSEEVENTF_MOVE              As Long = &H1
 Private Const MOUSEEVENTF_LEFTDOWN          As Long = &H2
@@ -51,6 +47,14 @@ Private Const MOUSEEVENTF_WHEEL             As Long = &H800
 Private Const MOUSEEVENTF_ABSOLUTE          As Long = &H8000&
 '--- for GetSystemMetrics
 Private Const SM_SWAPBUTTON                 As Long = 23
+'--- for RedrawWindow
+Private Const RDW_INVALIDATE                As Long = &H1
+Private Const RDW_ALLCHILDREN               As Long = &H80
+Private Const RDW_ERASENOW                  As Long = &H200
+'--- for thunks
+Private Const MEM_COMMIT                    As Long = &H1000
+Private Const PAGE_EXECUTE_READWRITE        As Long = &H40
+Private Const SIGN_BIT                      As Long = &H80000000
 
 Private Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (Destination As Any, Source As Any, ByVal Length As Long)
 Private Declare Function ArrPtr Lib "msvbvm60" Alias "VarPtr" (Ptr() As Any) As Long
@@ -68,6 +72,7 @@ Private Declare Function GetCurrentProcess Lib "kernel32" () As Long
 Private Declare Sub CoTaskMemFree Lib "ole32" (ByVal pv As Long)
 Private Declare Sub mouse_event Lib "user32" (ByVal dwFlags As Long, ByVal dx As Long, ByVal dy As Long, ByVal cButtons As Long, ByVal dwExtraInfo As Long)
 Private Declare Function GetSystemMetrics Lib "user32" (ByVal nIndex As Long) As Long
+Private Declare Function RedrawWindow Lib "user32" (ByVal hWnd As Long, lprcUpdate As Any, ByVal hrgnUpdate As Long, ByVal fuRedraw As Long) As Long
 '--- for thunks
 Private Declare Function VirtualAlloc Lib "kernel32" (ByVal lpAddress As Long, ByVal dwSize As Long, ByVal flAllocationType As Long, ByVal flProtect As Long) As Long
 Private Declare Function CallWindowProc Lib "user32" Alias "CallWindowProcA" (ByVal lpPrevWndFunc As Long, ByVal hWnd As Long, ByVal Msg As Long, ByVal wParam As Long, ByVal lParam As Long) As Long
@@ -505,6 +510,9 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
                 .Height = pvNetworkShort(.Height)
             End With
             .Pos = .Pos + UcsClientFramebufferUpdateRequestSize
+            If m_uClientFramebufferUpdate.Incremental = 0 Then
+                Call RedrawWindow(0, ByVal 0, 0, RDW_INVALIDATE Or RDW_ALLCHILDREN Or RDW_ERASENOW)
+            End If
             TimerProc
         Case ucsMsgKeyEvent
             If .Size - .Pos < UcsClientKeyEventSize Then
@@ -538,7 +546,7 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
                 If .Size - .Pos < UcsClientCutTextSize + m_uClientCutText.Length Then
                     GoTo QH
                 End If
-                ReDim m_uClientCutText.Text(0 To m_uClientCutText.Length - 1) As Byte
+                pvArrayAllocate m_uClientCutText.Text, m_uClientCutText.Length, FUNC_NAME
                 Call CopyMemory(m_uClientCutText.Text(0), .Data(.Pos + UcsClientCutTextSize), m_uClientCutText.Length)
             End If
             .Pos = .Pos + UcsClientCutTextSize + m_uClientCutText.Length
@@ -556,14 +564,21 @@ EH:
 End Function
 
 Private Function pvHandlePointerEvent(uCtx As UcsCaptureContext, uEvent As UcsClientPointerEventType) As Boolean
-    Dim LNG_BUTTON1     As Long: LNG_BUTTON1 = 2 ^ IIf(GetSystemMetrics(SM_SWAPBUTTON) <> 0, 2, 0)
+    Dim LNG_BUTTON1     As Long
     Const LNG_BUTTON2   As Long = 2 ^ 1
-    Dim LNG_BUTTON3     As Long: LNG_BUTTON3 = 2 ^ IIf(GetSystemMetrics(SM_SWAPBUTTON) <> 0, 0, 2)
+    Dim LNG_BUTTON3     As Long
     Const LNG_BUTTON4   As Long = 2 ^ 3
     Const LNG_BUTTON5   As Long = 2 ^ 4
     Dim lFlags          As Long
     Dim lWheel          As Long
     
+    If GetSystemMetrics(SM_SWAPBUTTON) = 0 Then
+        LNG_BUTTON1 = 2 ^ 0
+        LNG_BUTTON3 = 2 ^ 2
+    Else
+        LNG_BUTTON1 = 2 ^ 2
+        LNG_BUTTON3 = 2 ^ 0
+    End If
     With uEvent
         lFlags = MOUSEEVENTF_ABSOLUTE Or MOUSEEVENTF_MOVE
         If (.ButtonMask And LNG_BUTTON1) <> (m_uClientPointer.ButtonMask And LNG_BUTTON1) Then
@@ -815,7 +830,7 @@ Private Function pvCaptureFrame(uCtx As UcsCaptureContext, uFrame As UcsCaptureF
         If uFrameInfo.PointerShapeBufferSize > 0 Then
             hResult = .Duplication.GetFramePointerShape((UBound(uFrame.PointerShape) + 1), uFrame.PointerShape(0), uFrame.PointerSize, uFrame.PointerInfo)
             If hResult = DXGI_ERROR_MORE_DATA Then
-                ReDim uFrame.PointerShape(0 To uFrame.PointerSize - 1) As Byte
+                pvArrayAllocate uFrame.PointerShape, uFrame.PointerSize, FUNC_NAME
                 hResult = .Duplication.GetFramePointerShape((UBound(uFrame.PointerShape) + 1), uFrame.PointerShape(0), uFrame.PointerSize, uFrame.PointerInfo)
             End If
             If hResult < 0 Then
@@ -946,7 +961,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
             pvCapturePrepareLut baGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
             pvCapturePrepareLut baBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
         End If
-        ReDim baRow(0 To uCtx.Width * 4 - 1) As Byte
+        pvArrayAllocate baRow, uCtx.Width * 4, FUNC_NAME & ".baRow"
         '--- send pointer
         If .PointerShapeBufferSize > 0 And m_uClientEncodings.HasCursorPseudoEncoding Then
             Select Case .PointerInfo.Type
@@ -955,11 +970,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     .PointerInfo.Height = .PointerInfo.Height \ 2
                 End If
                 lPitch = ((.PointerInfo.Width + 7) \ 8)
-                If .PointerInfo.Height * lPitch > 0 Then
-                    ReDim baMask(0 To .PointerInfo.Height * lPitch - 1) As Byte
-                Else
-                    baMask = vbNullString
-                End If
+                pvArrayAllocate baMask, .PointerInfo.Height * lPitch, FUNC_NAME & ".baMask"
                 For lIdx = 0 To 7
                     baBit(lIdx) = &H80 \ 2 ^ (lIdx Mod 8)
                 Next
@@ -978,7 +989,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                 pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
                 If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
                     Select Case lBytesPerPixel
-                    Case 1
+                    Case 1, 4
                         For lY = 0 To .PointerInfo.Height - 1
                             Debug.Assert IsBadReadPtr(VarPtr(.PointerShape(lY * .PointerInfo.Pitch)), .PointerInfo.Width * 4) = 0
                             Call CopyMemory(baRow(0), .PointerShape(lY * .PointerInfo.Pitch), .PointerInfo.Width * 4)
@@ -987,19 +998,11 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                                     lIdx = lY * lPitch + lX \ 8
                                     baMask(lIdx) = baMask(lIdx) Or baBit(lX Mod 8)
                                 End If
-                                baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
-                            Next
-                            pvBufferWriteBlob uOutput, VarPtr(baRow(0)), .PointerInfo.Width
-                        Next
-                    Case 4
-                        For lY = 0 To .PointerInfo.Height - 1
-                            For lX = 0 To .PointerInfo.Width - 1
-                                If (baRow(lX * 4 + 3)) >= &H0 Then
-                                    lIdx = lY * lPitch + lX \ 8
-                                    baMask(lIdx) = baMask(lIdx) Or baBit(lX Mod 8)
+                                If lBytesPerPixel = 1 Then
+                                    baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
                                 End If
                             Next
-                            pvBufferWriteBlob uOutput, VarPtr(.PointerShape(lY * .PointerInfo.Pitch)), .PointerInfo.Width * 4
+                            pvBufferWriteBlob uOutput, VarPtr(baRow(0)), .PointerInfo.Width * lBytesPerPixel
                         Next
                     Case Else
                         pvBufferWriteBlob uOutput, 0, .PointerInfo.Height * .PointerInfo.Width * 4
@@ -1016,20 +1019,20 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                         Next
                     Next
                 End If
-                pvBufferWriteBlob uOutput, VarPtr(baMask(0)), UBound(baMask) + 1
-'            Case Else
-'                Debug.Print ".PointerInfo.Type=" & Hex(.PointerInfo.Type)
+                pvBufferWriteArray uOutput, baMask
+            Case Else
+                Debug.Print "Unknown .PointerInfo.Type=" & Hex(.PointerInfo.Type)
             End Select
             .PointerShapeBufferSize = 0
         End If
         '--- send desktop
         lBufferSize = oSocket.SockOpt(ucsSsoSendBuffer)
+        With uUpdate
+            .MessageType = ucsMsgFramebufferUpdate
+            .NumberOfRectangles = pvNetworkShort(uFrame.NumTiles)
+        End With
+        pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
         For lIdx = 0 To .NumTiles - 1
-            With uUpdate
-                .MessageType = ucsMsgFramebufferUpdate
-                .NumberOfRectangles = pvNetworkShort(1)
-            End With
-            pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
             lSrcIndex = .Tiles(lIdx).SrcIndex
             uRectangle.XPosition = pvNetworkShort(.DirtyRects(lSrcIndex).Left + .Tiles(lIdx).Left)
             uRectangle.YPosition = pvNetworkShort(.DirtyRects(lSrcIndex).Top + .Tiles(lIdx).Top)
@@ -1118,9 +1121,10 @@ EH:
 End Function
 
 Private Sub pvCapturePrepareLut(baLut() As Byte, ByVal lMax As Long, ByVal lShift As Long)
+    Const FUNC_NAME     As String = "pvCapturePrepareLut"
     Dim lIdx            As Long
     
-    ReDim baLut(0 To 255) As Byte
+    pvArrayAllocate baLut, 256, FUNC_NAME & ".baLut"
     For lIdx = 0 To 255
         baLut(lIdx) = Int(lIdx * lMax / 255 + 0.5) * lShift
     Next
