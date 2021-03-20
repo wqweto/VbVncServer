@@ -143,6 +143,7 @@ Private Enum UcsRdfEncodingEnum
     ucsEncTight = 7
     ucsEncTRLE = 15
     ucsEncZRLE = 16
+    ucsEncCursorWithAlphaPseudoEncoding = -314
     ucsEncCursorPseudoEncoding = -239
     ucsEncDesktopSizePseudoEncoding = -223
 End Enum
@@ -183,6 +184,7 @@ Private Type UcsClientSetEncodingsType
     EncodingType()      As Long
     HasZlib             As Boolean
     HasTight            As Boolean
+    HasCursorWithAlphaPseudoEncoding As Boolean
     HasCursorPseudoEncoding As Boolean
 End Type
 Private Const UcsClientSetEncodingsSize As Long = 4
@@ -491,6 +493,8 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
                             .HasZlib = True
                         Case ucsEncTight
                             .HasTight = True
+                        Case ucsEncCursorWithAlphaPseudoEncoding
+                            .HasCursorWithAlphaPseudoEncoding = True
                         Case ucsEncCursorPseudoEncoding
                             .HasCursorPseudoEncoding = True
                         End Select
@@ -895,45 +899,6 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvCapturePrepareTiles(uFrame As UcsCaptureFrame) As Boolean
-    Const FUNC_NAME     As String = "pvCapturePrepareTiles"
-    Const TILE_SIZE     As Long = 256
-    Dim lIdx            As Long
-    Dim lWidth          As Long
-    Dim lHeight         As Long
-    Dim lX              As Long
-    Dim lY              As Long
-    
-    On Error GoTo EH
-    uFrame.NumTiles = 0
-    For lIdx = 0 To uFrame.NumDirtyRects - 1
-        With uFrame.DirtyRects(lIdx)
-            lWidth = .Right - .Left
-            lHeight = .Bottom - .Top
-        End With
-        For lY = 0 To lHeight - 1 Step TILE_SIZE
-            For lX = 0 To lWidth - 1 Step TILE_SIZE
-                If uFrame.NumTiles > UBound(uFrame.Tiles) Then
-                    ReDim Preserve uFrame.Tiles(0 To UBound(uFrame.Tiles) * 2 + 1) As UcsCaptureTile
-                End If
-                With uFrame.Tiles(uFrame.NumTiles)
-                    .SrcIndex = lIdx
-                    .Left = lX
-                    .Top = lY
-                    .Width = Clamp(lX + TILE_SIZE, , lWidth) - lX
-                    .Height = Clamp(lY + TILE_SIZE, , lHeight) - lY
-                End With
-                uFrame.NumTiles = uFrame.NumTiles + 1
-            Next
-        Next
-    Next
-    '--- success
-    pvCapturePrepareTiles = True
-    Exit Function
-EH:
-    PrintError FUNC_NAME
-End Function
-
 Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFrame, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     Const FUNC_NAME     As String = "pvCaptureSend"
     Dim lIdx            As Long
@@ -953,6 +918,8 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
     Dim uTile           As UcsBuffer
     Dim baBit(0 To 7)   As Byte
     Dim baMask()        As Byte
+    Dim bAndFlag        As Boolean
+    Dim bXorFlag        As Boolean
     
     On Error GoTo EH
     If Not pvCapturePrepareTiles(uFrame) Then
@@ -988,10 +955,17 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     .YPosition = pvNetworkShort(uFrame.PointerInfo.HotSpot.Y)
                     .Width = pvNetworkShort(uFrame.PointerInfo.Width)
                     .Height = pvNetworkShort(uFrame.PointerInfo.Height)
-                    .EncodingType = pvNetworkLong(ucsEncCursorPseudoEncoding)
+                    If uFrame.PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And m_uClientEncodings.HasCursorWithAlphaPseudoEncoding Then
+                        .EncodingType = pvNetworkLong(ucsEncCursorWithAlphaPseudoEncoding)
+                    Else
+                        .EncodingType = pvNetworkLong(ucsEncCursorPseudoEncoding)
+                    End If
                 End With
                 pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
-                If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
+                If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And m_uClientEncodings.HasCursorWithAlphaPseudoEncoding Then
+                    pvBufferWriteLong uOutput, pvNetworkLong(ucsEncRaw), Size:=4
+                    pvBufferWriteBlob uOutput, VarPtr(.PointerShape(0)), .PointerInfo.Height * .PointerInfo.Width * 4
+                ElseIf .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
                     Select Case lBytesPerPixel
                     Case 1, 4
                         For lY = 0 To .PointerInfo.Height - 1
@@ -1009,23 +983,24 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                             pvBufferWriteBlob uOutput, VarPtr(baRow(0)), .PointerInfo.Width * lBytesPerPixel
                         Next
                     Case Else
-                        pvBufferWriteBlob uOutput, 0, .PointerInfo.Height * .PointerInfo.Width * 4
+                        pvBufferWriteBlob uOutput, 0, .PointerInfo.Height * .PointerInfo.Width * lBytesPerPixel
                     End Select
+                    pvBufferWriteArray uOutput, baMask
                 Else
                     lPtr = .PointerInfo.Pitch * .PointerInfo.Height
                     For lY = 0 To .PointerInfo.Height - 1
                         For lX = 0 To .PointerInfo.Width - 1
-                            If (.PointerShape(lPtr + lY * .PointerInfo.Pitch + lX \ 8) And baBit(lX Mod 8)) <> 0 Then
+                            bAndFlag = (.PointerShape(lY * .PointerInfo.Pitch + lX \ 8) And baBit(lX Mod 8)) <> 0
+                            bXorFlag = (.PointerShape(lPtr + lY * .PointerInfo.Pitch + lX \ 8) And baBit(lX Mod 8)) <> 0
+                            If Not bAndFlag Or bXorFlag Then
                                 lIdx = lY * lPitch + lX \ 8
                                 baMask(lIdx) = baMask(lIdx) Or baBit(lX Mod 8)
                             End If
-                            pvBufferWriteLong uOutput, 0, Size:=lBytesPerPixel
+                            pvBufferWriteLong uOutput, IIf(bAndFlag Xor bXorFlag, -1, 0), Size:=lBytesPerPixel
                         Next
                     Next
+                    pvBufferWriteArray uOutput, baMask
                 End If
-                pvBufferWriteArray uOutput, baMask
-            Case Else
-                Debug.Print "Unknown .PointerInfo.Type=" & Hex(.PointerInfo.Type)
             End Select
             .PointerShapeBufferSize = 0
         End If
@@ -1121,17 +1096,59 @@ QH:
     Exit Function
 EH:
     PrintError FUNC_NAME
-    Resume QH
+End Function
+
+Private Function pvCapturePrepareTiles(uFrame As UcsCaptureFrame) As Boolean
+    Const FUNC_NAME     As String = "pvCapturePrepareTiles"
+    Const TILE_SIZE     As Long = 256
+    Dim lIdx            As Long
+    Dim lWidth          As Long
+    Dim lHeight         As Long
+    Dim lX              As Long
+    Dim lY              As Long
+    
+    On Error GoTo EH
+    uFrame.NumTiles = 0
+    For lIdx = 0 To uFrame.NumDirtyRects - 1
+        With uFrame.DirtyRects(lIdx)
+            lWidth = .Right - .Left
+            lHeight = .Bottom - .Top
+        End With
+        For lY = 0 To lHeight - 1 Step TILE_SIZE
+            For lX = 0 To lWidth - 1 Step TILE_SIZE
+                If uFrame.NumTiles > UBound(uFrame.Tiles) Then
+                    ReDim Preserve uFrame.Tiles(0 To UBound(uFrame.Tiles) * 2 + 1) As UcsCaptureTile
+                End If
+                With uFrame.Tiles(uFrame.NumTiles)
+                    .SrcIndex = lIdx
+                    .Left = lX
+                    .Top = lY
+                    .Width = Clamp(lX + TILE_SIZE, , lWidth) - lX
+                    .Height = Clamp(lY + TILE_SIZE, , lHeight) - lY
+                End With
+                uFrame.NumTiles = uFrame.NumTiles + 1
+            Next
+        Next
+    Next
+    '--- success
+    pvCapturePrepareTiles = True
+    Exit Function
+EH:
+    PrintError FUNC_NAME
 End Function
 
 Private Sub pvCapturePrepareLut(baLut() As Byte, ByVal lMax As Long, ByVal lShift As Long)
     Const FUNC_NAME     As String = "pvCapturePrepareLut"
     Dim lIdx            As Long
     
+    On Error GoTo EH
     pvArrayAllocate baLut, 256, FUNC_NAME & ".baLut"
     For lIdx = 0 To 255
         baLut(lIdx) = Int(lIdx * lMax / 255 + 0.5) * lShift
     Next
+    Exit Sub
+EH:
+    PrintError FUNC_NAME
 End Sub
 
 '= buffer helpers ========================================================
