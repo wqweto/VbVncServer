@@ -25,6 +25,8 @@ Option Explicit
 DefObj A-Z
 Private Const MODULE_NAME As String = "cVncServer"
 
+#Const ImplZlib = VNC_NOZLIB = 0
+
 '=========================================================================
 ' API
 '=========================================================================
@@ -326,8 +328,10 @@ Private m_uClientCutText        As UcsClientCutTextType
 Private m_uCaptureCtx           As UcsCaptureContext
 Private m_uCaptureFrame         As UcsCaptureFrame
 Private m_pTimer                As IUnknown
-Private m_oZipArchive           As cZipArchive
-Private m_hDeflateCtx           As Long
+#If ImplZlib Then
+    Private m_oZipArchive       As cZipArchive
+    Private m_hDeflateCtx       As Long
+#End If
 
 '=========================================================================
 ' Error handling
@@ -1027,16 +1031,20 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
             uRectangle.YPosition = pvNetworkShort(.DirtyRects(lSrcIndex).Top + .Tiles(lIdx).Top)
             uRectangle.Width = pvNetworkShort(.Tiles(lIdx).Width)
             uRectangle.Height = pvNetworkShort(.Tiles(lIdx).Height)
-            If m_uClientEncodings.HasTight Then
-                uRectangle.EncodingType = pvNetworkLong(ucsEncTight)
-                If lBytesPerPixel = 4 Then
-                    lBytesPerPixel = 3
+            #If ImplZlib Then
+                If m_uClientEncodings.HasTight Then
+                    uRectangle.EncodingType = pvNetworkLong(ucsEncTight)
+                    If lBytesPerPixel = 4 Then
+                        lBytesPerPixel = 3
+                    End If
+                ElseIf m_uClientEncodings.HasZlib Then
+                    uRectangle.EncodingType = pvNetworkLong(ucsEncZlib)
+                Else
+                    uRectangle.EncodingType = pvNetworkLong(ucsEncRaw)
                 End If
-            ElseIf m_uClientEncodings.HasZlib Then
-                uRectangle.EncodingType = pvNetworkLong(ucsEncZlib)
-            Else
+            #Else
                 uRectangle.EncodingType = pvNetworkLong(ucsEncRaw)
-            End If
+            #End If
             pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
             lPitch = (.DirtyRects(lSrcIndex).Right - .DirtyRects(lSrcIndex).Left) * 4
             lPtr = VarPtr(.DirtyBuffers(lSrcIndex).Data(0))
@@ -1067,15 +1075,19 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
             Case Else
                 pvBufferWriteBlob uTile, 0, .Tiles(lIdx).Height * .Tiles(lIdx).Width * lBytesPerPixel
             End Select
-            If m_uClientEncodings.HasTight Then
-                '--- compression control: no reset, use stream 0, no filter
-                pvBufferWriteLong uOutput, 0
-                pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size, CompactSize:=True
-            ElseIf m_uClientEncodings.HasZlib Then
-                pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
-            Else
+            #If ImplZlib Then
+                If m_uClientEncodings.HasTight Then
+                    '--- compression control: no reset, use stream 0, no filter
+                    pvBufferWriteLong uOutput, 0
+                    pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size, CompactSize:=True
+                ElseIf m_uClientEncodings.HasZlib Then
+                    pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
+                Else
+                    pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
+                End If
+            #Else
                 pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
-            End If
+            #End If
             If uOutput.Size >= uOutput.Pos + lBufferSize Then
                 If Not oSocket.HasPendingEvent Then
                     If Not pvBufferSendAsync(uOutput, oSocket) Then
@@ -1178,6 +1190,7 @@ Private Sub pvBufferWriteBlob(uOutput As UcsBuffer, ByVal lPtr As Long, ByVal lS
     uOutput.Size = pvArrayWriteBlob(uOutput.Data, uOutput.Size, lPtr, lSize)
 End Sub
 
+#If ImplZlib Then
 Private Sub pvBufferWriteZlibBlob(uOutput As UcsBuffer, ByVal lPtr As Long, ByVal lSize As Long, Optional ByVal CompactSize As Boolean)
     Dim bFirst          As Boolean
     Dim lOutputPtr      As Long
@@ -1202,6 +1215,7 @@ Private Sub pvBufferWriteZlibBlob(uOutput As UcsBuffer, ByVal lPtr As Long, ByVa
         Call CoTaskMemFree(lOutputPtr)
     End If
 End Sub
+#End If
 
 Private Function pvArrayWriteBlob(baBuffer() As Byte, ByVal lPos As Long, ByVal lPtr As Long, ByVal lSize As Long) As Long
     Const FUNC_NAME     As String = "pvArrayWriteBlob"
@@ -1595,10 +1609,12 @@ End Property
 ' Base class events
 '=========================================================================
 
+#If ImplZlib Then
 Private Sub Class_Terminate()
     If Not m_oZipArchive Is Nothing Then
         m_oZipArchive.DeflateEnd m_hDeflateCtx
     End If
 End Sub
+#End If
 
 

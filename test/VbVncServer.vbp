@@ -17,11 +17,11 @@ HelpContextID="0"
 CompatibleMode="0"
 MajorVer=0
 MinorVer=0
-RevisionVer=1
+RevisionVer=2
 AutoIncrementVer=0
 ServerSupportFiles=0
 VersionCompanyName="Unicontsoft"
-CondComp="ZIP_INFLATE = 1 : ZIP_NOEXTRACT = 1"
+CondComp="VNC_NOZLIB = 0 : ZIP_INFLATE = 1 : ZIP_NOEXTRACT = 1"
 CompilationType=0
 OptimizationType=0
 FavorPentiumPro(tm)=0
