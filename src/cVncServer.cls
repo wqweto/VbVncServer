@@ -207,7 +207,6 @@ Private Type UcsServerInitType
     FramebufferHeight   As Integer
     ServerPixelFormat   As UcsPixelFormatType
     NameLength          As Long
-'    NameString()        As Byte
 End Type
 Private Const UcsServerInitSize As Long = 4 + UcsPixelFormatSize + 4
 
@@ -270,14 +269,12 @@ Private Type UcsServerRectangleType
     Width               As Integer
     Height              As Integer
     EncodingType        As Long
-'    Data()              As Byte
 End Type
 Private Const UcsServerRectangleSize As Long = 12
 
 Private Type UcsServerFramebufferUpdateType
     MessageType         As Integer          ' ucsMsgFramebufferUpdate = 0
     NumberOfRectangles  As Integer
-'    Rectangle()         As UcsServerRectangleType
 End Type
 Private Const UcsServerFramebufferUpdateSize As Long = 4
 
@@ -292,14 +289,12 @@ Private Const UcsServerFramebufferUpdateSize As Long = 4
 '    MessageType         As Integer          ' ucsMsgSetColorMapEntries = 1
 '    FirstColor          As Integer
 '    NumberOfColors      As Integer
-''    Color()             As UcsServerRgbValueType
 'End Type
 'Private Const UcsServerSetColorMapEntriesSize As Long = 6
 
 'Private Type UcsServerCutTextType
 '    MessageType         As Long             ' ucsMsgServerCutText = 3
 '    Length              As Long
-''    Text()              As Byte
 'End Type
 'Private Const UcsServerCutTextSize As Long = 8
 
@@ -538,8 +533,103 @@ Private Function pvSendEmptyFramebufferUpdate(uOutput As UcsBuffer, oSocket As c
     pvSendEmptyFramebufferUpdate = pvBufferSendAsync(uOutput, oSocket)
 End Function
 
-Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
-    Const FUNC_NAME     As String = "pvParseClientMessage"
+Private Sub pvHandleReceive()
+    Const FUNC_NAME     As String = "pvHandleReceive"
+    Const SecurityResultOk As Long = 0
+    Dim baBuffer()      As Byte
+    Dim vElem           As Variant
+    
+    On Error GoTo EH
+    Do
+        If Not m_oSocket.ReceiveArray(baBuffer) Then
+            GoTo QH
+        End If
+        If UBound(baBuffer) < 0 Then
+            GoTo QH
+        End If
+        pvBufferWriteArray m_uRecvBuffer, baBuffer
+        With m_uRecvBuffer
+            Do While .Pos < .Size
+                Select Case m_eState
+                Case ucsStaExpectClientMessage
+                    If Not pvHandleClientMessage(m_uRecvBuffer) Then
+                        Exit Do
+                    End If
+                Case ucsStaExpectProtocolVersion
+                    If .Size - .Pos < Len(STR_PROTOCOL_VERSION) Then
+                        Exit Do
+                    End If
+                    '--- ignore client protocol version
+                    .Pos = .Pos + Len(STR_PROTOCOL_VERSION)
+                    If Not pvSendSecurityTypes(m_uSendBuffer, m_oSocket) Then
+                        m_eState = ucsStaNone
+                        GoTo QH
+                    End If
+                    m_eState = ucsStaExpectSecurityHandshake
+                Case ucsStaExpectSecurityHandshake
+                    m_eClientSecurityType = .Data(.Pos)
+                    .Pos = .Pos + 1
+                    Select Case m_eClientSecurityType
+                    Case ucsSecNone
+                        If Not pvSendSecurityResult(SecurityResultOk, m_uSendBuffer, m_oSocket) Then
+                            m_eState = ucsStaNone
+                            GoTo QH
+                        End If
+                        m_eState = ucsStaExpectClientInit
+                    Case ucsSecTight
+                        If Not pvSendTightSecurityType(m_uSendBuffer, m_oSocket) Then
+                            m_eState = ucsStaNone
+                            GoTo QH
+                        End If
+                        If Not pvSendSecurityResult(SecurityResultOk, m_uSendBuffer, m_oSocket) Then
+                            m_eState = ucsStaNone
+                            GoTo QH
+                        End If
+                        m_eState = ucsStaExpectClientInit
+                    Case Else
+                        Debug.Print "Unknown security type (" & .Data(.Pos) & ")"
+                        m_eState = ucsStaNone
+                        GoTo QH
+                    End Select
+                Case ucsStaExpectClientInit
+                    '--- ignore shared flag
+                    .Pos = .Pos + 1
+                    vElem = pvCaptureEnumDevices().Item(1)
+                    If Not pvCaptureInit(m_uCaptureCtx, vElem(0), 1) Then
+                        GoTo QH
+                    End If
+                    With m_uCaptureFrame
+                        ReDim .MoveRects(0 To 0) As DXGI_OUTDUPL_MOVE_RECT
+                        ReDim .DirtyRects(0 To 0) As D3D11_RECT
+                        ReDim .PointerShape(0 To 0) As Byte
+                        ReDim .Tiles(0 To 31) As UcsCaptureTile
+                    End With
+                    If Not pvSendServerInit(m_uCaptureCtx, STR_APP_NAME, m_uSendBuffer, m_oSocket) Then
+                        m_eState = ucsStaNone
+                        GoTo QH
+                    End If
+                    m_eState = ucsStaExpectClientMessage
+                Case Else
+                    Exit Do
+                End Select
+            Loop
+            If .Pos > 0 Then
+                If .Size > .Pos Then
+                    Call CopyMemory(.Data(0), .Data(.Pos), .Size - .Pos)
+                End If
+                .Size = .Size - .Pos
+                .Pos = 0
+            End If
+        End With
+    Loop
+QH:
+    Exit Sub
+EH:
+    PrintError FUNC_NAME
+End Sub
+
+Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
+    Const FUNC_NAME     As String = "pvHandleClientMessage"
     Dim lIdx            As Long
     Dim uPointerEvent   As UcsClientPointerEventType
     
@@ -662,7 +752,7 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
         End Select
     End With
     '--- succes
-    pvParseClientMessage = True
+    pvHandleClientMessage = True
 QH:
     Exit Function
 EH:
@@ -1643,109 +1733,23 @@ End Function
 '=========================================================================
 
 Private Sub m_oSocket_OnAccept()
+    Const FUNC_NAME     As String = "m_oSocket_OnAccept"
     Dim oSocket         As cAsyncSocket
     
+    On Error GoTo EH
     If Not m_oSocket.Accept(oSocket) Then
         GoTo QH
     End If
     Set m_cClients = New cVncServer
     m_cClients.Accept oSocket
 QH:
-End Sub
-
-Private Sub m_oSocket_OnReceive()
-    Const FUNC_NAME     As String = "m_oSocket_OnReceive"
-    Const SecurityResultOk As Long = 0
-    Dim baBuffer()      As Byte
-    Dim vElem           As Variant
-    
-    On Error GoTo EH
-    Do
-        If Not m_oSocket.ReceiveArray(baBuffer) Then
-            GoTo QH
-        End If
-        If UBound(baBuffer) < 0 Then
-            GoTo QH
-        End If
-        pvBufferWriteArray m_uRecvBuffer, baBuffer
-        With m_uRecvBuffer
-            Do While .Pos < .Size
-                Select Case m_eState
-                Case ucsStaExpectClientMessage
-                    If Not pvParseClientMessage(m_uRecvBuffer) Then
-                        Exit Do
-                    End If
-                Case ucsStaExpectProtocolVersion
-                    If .Size - .Pos < Len(STR_PROTOCOL_VERSION) Then
-                        Exit Do
-                    End If
-                    '--- ignore client protocol version
-                    .Pos = .Pos + Len(STR_PROTOCOL_VERSION)
-                    If Not pvSendSecurityTypes(m_uSendBuffer, m_oSocket) Then
-                        m_eState = ucsStaNone
-                        GoTo QH
-                    End If
-                    m_eState = ucsStaExpectSecurityHandshake
-                Case ucsStaExpectSecurityHandshake
-                    m_eClientSecurityType = .Data(.Pos)
-                    .Pos = .Pos + 1
-                    Select Case m_eClientSecurityType
-                    Case ucsSecNone
-                        If Not pvSendSecurityResult(SecurityResultOk, m_uSendBuffer, m_oSocket) Then
-                            m_eState = ucsStaNone
-                            GoTo QH
-                        End If
-                        m_eState = ucsStaExpectClientInit
-                    Case ucsSecTight
-                        If Not pvSendTightSecurityType(m_uSendBuffer, m_oSocket) Then
-                            m_eState = ucsStaNone
-                            GoTo QH
-                        End If
-                        If Not pvSendSecurityResult(SecurityResultOk, m_uSendBuffer, m_oSocket) Then
-                            m_eState = ucsStaNone
-                            GoTo QH
-                        End If
-                        m_eState = ucsStaExpectClientInit
-                    Case Else
-                        Debug.Print "Unknown security type (" & .Data(.Pos) & ")"
-                        m_eState = ucsStaNone
-                        GoTo QH
-                    End Select
-                Case ucsStaExpectClientInit
-                    '--- ignore shared flag
-                    .Pos = .Pos + 1
-                    vElem = pvCaptureEnumDevices().Item(1)
-                    If Not pvCaptureInit(m_uCaptureCtx, vElem(0), 1) Then
-                        GoTo QH
-                    End If
-                    With m_uCaptureFrame
-                        ReDim .MoveRects(0 To 0) As DXGI_OUTDUPL_MOVE_RECT
-                        ReDim .DirtyRects(0 To 0) As D3D11_RECT
-                        ReDim .PointerShape(0 To 0) As Byte
-                        ReDim .Tiles(0 To 31) As UcsCaptureTile
-                    End With
-                    If Not pvSendServerInit(m_uCaptureCtx, STR_APP_NAME, m_uSendBuffer, m_oSocket) Then
-                        m_eState = ucsStaNone
-                        GoTo QH
-                    End If
-                    m_eState = ucsStaExpectClientMessage
-                Case Else
-                    Exit Do
-                End Select
-            Loop
-            If .Pos > 0 Then
-                If .Size > .Pos Then
-                    Call CopyMemory(.Data(0), .Data(.Pos), .Size - .Pos)
-                End If
-                .Size = .Size - .Pos
-                .Pos = 0
-            End If
-        End With
-    Loop
-QH:
     Exit Sub
 EH:
     PrintError FUNC_NAME
+End Sub
+
+Private Sub m_oSocket_OnReceive()
+    pvHandleReceive
 End Sub
 
 Private Sub m_oSocket_OnSend()
