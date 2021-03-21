@@ -351,7 +351,7 @@ End Property
 
 Public Property Get LastError() As String
     If Not m_oSocket Is Nothing Then
-        LastError = m_oSocket.LastError
+        LastError = m_oSocket.GetErrorDescription(m_oSocket.LastError)
     End If
 End Property
 
@@ -378,12 +378,22 @@ End Function
 
 Public Function Accept(oSocket As cAsyncSocket) As Boolean
     Set m_oSocket = oSocket
-    If Not m_oSocket.SendText(STR_PROTOCOL_VERSION) Then
+    If Not pvSendProtocolVersion(m_uSendBuffer, m_oSocket) Then
         GoTo QH
     End If
     m_eState = ucsStaExpectProtocolVersion
     '--- success
     Accept = True
+QH:
+End Function
+
+Private Function pvSendProtocolVersion(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+    pvBufferWriteArray uOutput, oSocket.ToTextArray(STR_PROTOCOL_VERSION)
+    If Not pvBufferSendAsync(uOutput, oSocket) Then
+        GoTo QH
+    End If
+    '--- succees
+    pvSendProtocolVersion = True
 QH:
 End Function
 
@@ -470,7 +480,6 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
                 .BlueMax = pvNetworkShort(.BlueMax)
             End With
             .Pos = .Pos + UcsClientSetPixelFormatSize
-            TimerProc
         Case ucsMsgSetEncodings
             If .Size - .Pos < UcsClientSetEncodingsSize Then
                 GoTo QH
@@ -521,7 +530,7 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
             If m_uClientFramebufferUpdate.Incremental = 0 Then
                 Call RedrawWindow(0, ByVal 0, 0, RDW_INVALIDATE Or RDW_ALLCHILDREN Or RDW_ERASENOW)
             End If
-            TimerProc
+            Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
         Case ucsMsgKeyEvent
             If .Size - .Pos < UcsClientKeyEventSize Then
                 GoTo QH
@@ -559,6 +568,7 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
             End If
             .Pos = .Pos + UcsClientCutTextSize + m_uClientCutText.Length
         Case Else
+            Debug.Print "Unknown client message (" & .Data(.Pos) & ")", Timer
             '--- flush
             .Pos = .Size
         End Select
@@ -1397,6 +1407,10 @@ Private Sub m_oSocket_OnReceive()
         With m_uRecvBuffer
             Do While .Pos < .Size
                 Select Case m_eState
+                Case ucsStaExpectClientMessage
+                    If Not pvParseClientMessage(m_uRecvBuffer) Then
+                        Exit Do
+                    End If
                 Case ucsStaExpectProtocolVersion
                     If .Size - .Pos < Len(STR_PROTOCOL_VERSION) Then
                         Exit Do
@@ -1431,10 +1445,6 @@ Private Sub m_oSocket_OnReceive()
                         GoTo QH
                     End If
                     m_eState = ucsStaExpectClientMessage
-                Case ucsStaExpectClientMessage
-                    If Not pvParseClientMessage(m_uRecvBuffer) Then
-                        Exit Do
-                    End If
                 Case Else
                     Exit Do
                 End Select
