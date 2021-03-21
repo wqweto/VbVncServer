@@ -77,6 +77,24 @@ Private Declare Sub CoTaskMemFree Lib "ole32" (ByVal pv As Long)
 Private Declare Sub mouse_event Lib "user32" (ByVal dwFlags As Long, ByVal dx As Long, ByVal dy As Long, ByVal cButtons As Long, ByVal dwExtraInfo As Long)
 Private Declare Function GetSystemMetrics Lib "user32" (ByVal nIndex As Long) As Long
 Private Declare Function RedrawWindow Lib "user32" (ByVal hWnd As Long, lprcUpdate As Any, ByVal hrgnUpdate As Long, ByVal fuRedraw As Long) As Long
+Private Declare Function SHCreateMemStream Lib "shlwapi" Alias "#12" (pInit As Any, ByVal cbInit As Long) As stdole.IUnknown
+Private Declare Function IStream_Size Lib "shlwapi" (ByVal pStream As stdole.IUnknown, uiSize As Any) As Long
+Private Declare Function IStream_Reset Lib "shlwapi" (ByVal pStream As stdole.IUnknown) As Long
+Private Declare Function IStream_Read Lib "shlwapi" (ByVal pStream As stdole.IUnknown, pvBuf As Any, ByVal cbSize As Long) As Long
+'--- WIC
+Private Declare Function WICCreateImagingFactory_Proxy Lib "windowscodecs" (ByVal SDKVersion As Long, ppIImagingFactory As stdole.IUnknown) As Long
+Private Declare Function IWICImagingFactory_CreateStream_Proxy Lib "windowscodecs" (ByVal pFactory As stdole.IUnknown, ppIWICStream As stdole.IUnknown) As Long
+Private Declare Function IWICImagingFactory_CreateEncoder_Proxy Lib "windowscodecs" (ByVal pFactory As stdole.IUnknown, guidContainerFormat As Any, pguidVendor As Any, ppIEncoder As stdole.IUnknown) As Long
+Private Declare Function IWICImagingFactory_CreateBitmapFromMemory_Proxy Lib "windowscodecs" (ByVal pFactory As stdole.IUnknown, ByVal uiWidth As Long, ByVal uiHeight As Long, aPixelFormat As Any, ByVal cbStride As Long, ByVal cbBufferSize As Long, pbBuffer As Any, ppIBitmap As stdole.IUnknown) As Long
+Private Declare Function IWICStream_InitializeFromIStream_Proxy Lib "windowscodecs" (ByVal pIWICStream As stdole.IUnknown, ByVal pIStream As stdole.IUnknown) As Long
+Private Declare Function IWICBitmapEncoder_Initialize_Proxy Lib "windowscodecs" (ByVal pIEncoder As stdole.IUnknown, ByVal pIStream As stdole.IUnknown, ByVal cacheOption As Long) As Long
+Private Declare Function IWICBitmapEncoder_CreateNewFrame_Proxy Lib "windowscodecs" (ByVal pIEncoder As stdole.IUnknown, ppIFrameEncode As stdole.IUnknown, ppIEncoderOptions As stdole.IUnknown) As Long
+Private Declare Function IWICBitmapEncoder_Commit_Proxy Lib "windowscodecs" (ByVal pIEncoder As stdole.IUnknown) As Long
+Private Declare Function IWICBitmapFrameEncode_Initialize_Proxy Lib "windowscodecs" (ByVal pIFrameEncode As stdole.IUnknown, ByVal pIEncoderOptions As stdole.IUnknown) As Long
+Private Declare Function IWICBitmapFrameEncode_SetSize_Proxy Lib "windowscodecs" (ByVal pIFrameEncode As stdole.IUnknown, ByVal uiWidth As Long, ByVal uiHeight As Long) As Long
+Private Declare Function IWICBitmapFrameEncode_WriteSource_Proxy Lib "windowscodecs" (ByVal pIFrameEncode As stdole.IUnknown, ByVal pIBitmapSource As stdole.IUnknown, pWicRect As Any) As Long
+Private Declare Function IWICBitmapFrameEncode_Commit_Proxy Lib "windowscodecs" (ByVal pIFrameEncode As stdole.IUnknown) As Long
+Private Declare Function IPropertyBag2_Write_Proxy Lib "windowscodecs" (ByVal pPropBag As stdole.IUnknown, ByVal cProperties As Long, pBag As Any, pvarValue As Variant) As Long
 '--- for thunks
 Private Declare Function VirtualAlloc Lib "kernel32" (ByVal lpAddress As Long, ByVal dwSize As Long, ByVal flAllocationType As Long, ByVal flProtect As Long) As Long
 Private Declare Function CallWindowProc Lib "user32" Alias "CallWindowProcA" (ByVal lpPrevWndFunc As Long, ByVal hWnd As Long, ByVal Msg As Long, ByVal wParam As Long, ByVal lParam As Long) As Long
@@ -96,7 +114,7 @@ Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnviron
 
 Private Const STR_TIGHT_SERVER_MSGS         As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
 Private Const STR_TIGHT_CLIENT_MSGS         As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
-Private Const STR_TIGHT_ENCODINGS           As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR"
+Private Const STR_TIGHT_ENCODINGS           As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-32;TGHT;JPEGQLVL|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR"
 
 Private Enum UcsRfbProtocolStateEnum
     ucsStaNone
@@ -143,14 +161,30 @@ Private Enum UcsRdfEncodingEnum
     ucsEncRaw = 0
     ucsEncCopyRect = 1
     ucsEncRRE = 2
+    ucsEncCoRRE = 4
     ucsEncHextile = 5
     ucsEncZlib = 6
     ucsEncTight = 7
+    ucsEncZlibHextile = 8
+    ucsEncUltra = 9
+    ucsEncUltra2 = 10
     ucsEncTRLE = 15
     ucsEncZRLE = 16
-    ucsEncCursorWithAlphaPseudoEncoding = -314
-    ucsEncCursorPseudoEncoding = -239
-    ucsEncDesktopSizePseudoEncoding = -223
+    ucsEncHitachiZYWRLE = 17
+    ucsEncJPEG = 21
+    ucsEncJRLE = 22
+    ucsEncJRLE2 = 24
+    ucsPsEncCursorWithAlpha = -314
+    ucsPsEncExtendedDesktopSize = -308
+    ucsPsEncCompressionLevelLow = -256
+    ucsPsEncCompressionLevelHigh = -247
+    ucsPsEncCursor = -239
+    ucsPsEncPointerPosition = -232
+    ucsPsEncLastRect = -224
+    ucsPsEncDesktopSize = -223
+    ucsPsEncJpegQualityLevelLow = -32
+    ucsPsEncJpegQualityLevelHigh = -23
+    ucsPsEncExtendedClipboard = &HC0A1E5CE
 End Enum
 
 Private Type UcsPixelFormatType
@@ -192,6 +226,8 @@ Private Type UcsClientSetEncodingsType
     HasTight            As Boolean
     HasCursorWithAlphaPseudoEncoding As Boolean
     HasCursorPseudoEncoding As Boolean
+    CompressionLevel    As Long
+    JpegQualityLevel    As Long
 End Type
 Private Const UcsClientSetEncodingsSize As Long = 4
 
@@ -352,6 +388,7 @@ Private m_pTimer                As IUnknown
     Private m_oZipArchive       As cZipArchive
     Private m_hDeflateCtx       As Long
 #End If
+Private m_pWicFactory           As stdole.IUnknown
 
 '=========================================================================
 ' Error handling
@@ -544,10 +581,19 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
                             .HasZlib = True
                         Case ucsEncTight
                             .HasTight = True
-                        Case ucsEncCursorWithAlphaPseudoEncoding
+                        Case ucsPsEncCursorWithAlpha
                             .HasCursorWithAlphaPseudoEncoding = True
-                        Case ucsEncCursorPseudoEncoding
+                        Case ucsPsEncCursor
                             .HasCursorPseudoEncoding = True
+                        Case ucsPsEncCompressionLevelLow To ucsPsEncCompressionLevelHigh
+                            .CompressionLevel = .EncodingType(lIdx) - ucsPsEncCompressionLevelLow + 1
+                        Case ucsPsEncJpegQualityLevelLow To ucsPsEncJpegQualityLevelHigh
+                            .JpegQualityLevel = .EncodingType(lIdx) - ucsPsEncJpegQualityLevelLow + 1
+                        Case ucsEncRaw, ucsEncRRE, ucsEncCoRRE, ucsEncHextile, ucsEncZlibHextile, ucsEncUltra, ucsEncUltra2, ucsEncTRLE, ucsEncZRLE, ucsEncHitachiZYWRLE, _
+                                ucsEncJPEG, ucsEncJRLE, ucsEncJRLE2, ucsPsEncExtendedDesktopSize, ucsPsEncPointerPosition, ucsPsEncLastRect, ucsPsEncDesktopSize, ucsPsEncExtendedClipboard
+                            '--- do nothing
+                        Case Else
+'                            Debug.Print "Unknown encoding type " & .EncodingType(lIdx) & " (&H" & Hex$(.EncodingType(lIdx)) & ")"
                         End Select
                     Next
                 End With
@@ -972,6 +1018,8 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
     Dim baMask()        As Byte
     Dim bAndFlag        As Boolean
     Dim bXorFlag        As Boolean
+    Dim pJpegStream     As stdole.IUnknown
+    Dim cSize           As Currency
     
     On Error GoTo EH
     If Not pvCapturePrepareTiles(uFrame) Then
@@ -1008,9 +1056,9 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     .Width = pvNetworkShort(uFrame.PointerInfo.Width)
                     .Height = pvNetworkShort(uFrame.PointerInfo.Height)
                     If uFrame.PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And m_uClientEncodings.HasCursorWithAlphaPseudoEncoding Then
-                        .EncodingType = pvNetworkLong(ucsEncCursorWithAlphaPseudoEncoding)
+                        .EncodingType = pvNetworkLong(ucsPsEncCursorWithAlpha)
                     Else
-                        .EncodingType = pvNetworkLong(ucsEncCursorPseudoEncoding)
+                        .EncodingType = pvNetworkLong(ucsPsEncCursor)
                     End If
                 End With
                 pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
@@ -1096,51 +1144,73 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     uRectangle.EncodingType = pvNetworkLong(ucsEncRaw)
                 End If
             #Else
-                uRectangle.EncodingType = pvNetworkLong(ucsEncRaw)
+                If m_uClientEncodings.HasTight And m_uClientEncodings.JpegQualityLevel > 0 And lBytesPerPixel > 1 Then
+                    uRectangle.EncodingType = pvNetworkLong(ucsEncTight)
+                Else
+                    uRectangle.EncodingType = pvNetworkLong(ucsEncRaw)
+                End If
             #End If
             pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
             lPitch = (.DirtyRects(lSrcIndex).Right - .DirtyRects(lSrcIndex).Left) * 4
             lPtr = VarPtr(.DirtyBuffers(lSrcIndex).Data(0))
             uTile.Size = 0
-            Select Case lBytesPerPixel
-            Case 1, 3, 4
+            If m_uClientEncodings.HasTight And m_uClientEncodings.JpegQualityLevel > 0 And lBytesPerPixel > 1 Then
                 For lY = .Tiles(lIdx).Top To .Tiles(lIdx).Top + .Tiles(lIdx).Height - 1
-                    If lBytesPerPixel = 1 Then
-                        Debug.Assert IsBadReadPtr(lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4) = 0
-                        Call CopyMemory(baRow(0), ByVal lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4)
-                        For lX = 0 To .Tiles(lIdx).Width - 1
-                            baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
-                        Next
-                        pvBufferWriteBlob uTile, VarPtr(baRow(0)), .Tiles(lIdx).Width
-                    ElseIf lBytesPerPixel = 3 Then
-                        Debug.Assert IsBadReadPtr(lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4) = 0
-                        Call CopyMemory(baRow(4), ByVal lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4)
-                        For lX = 0 To .Tiles(lIdx).Width - 1
-                            baRow(lX * 3 + 0) = baRow(4 + lX * 4 + 2)
-                            baRow(lX * 3 + 1) = baRow(4 + lX * 4 + 1)
-                            baRow(lX * 3 + 2) = baRow(4 + lX * 4 + 0)
-                        Next
-                        pvBufferWriteBlob uTile, VarPtr(baRow(0)), .Tiles(lIdx).Width * 3
-                    Else
-                        pvBufferWriteBlob uTile, lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4
-                    End If
+                    pvBufferWriteBlob uTile, lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4
                 Next
-            Case Else
-                pvBufferWriteBlob uTile, 0, .Tiles(lIdx).Height * .Tiles(lIdx).Width * lBytesPerPixel
-            End Select
-            #If ImplZlib Then
-                If m_uClientEncodings.HasTight Then
-                    '--- compression control: no reset, use stream 0, no filter
-                    pvBufferWriteLong uOutput, 0
-                    pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size, CompactSize:=True
-                ElseIf m_uClientEncodings.HasZlib Then
-                    pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
-                Else
-                    pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
+                Set pJpegStream = Nothing
+                Set pJpegStream = SHCreateMemStream(ByVal 0, 0)
+                If Not pvConvertToJpeg(pJpegStream, .Tiles(lIdx).Width, .Tiles(lIdx).Height, uTile.Data, m_uClientEncodings.JpegQualityLevel * 10) Then
+                    GoTo QH
                 End If
-            #Else
-                pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
-            #End If
+                If pvCheckHResult(IStream_Size(pJpegStream, cSize)) < 0 Then
+                    GoTo QH
+                End If
+                '--- compression control: &H90 = no reset, JpegCompression
+                pvBufferWriteLong uOutput, &H90
+                pvBufferWriteCompactLong uOutput, cSize * 10000
+                pvBufferWriteStream uOutput, pJpegStream
+            Else
+                Select Case lBytesPerPixel
+                Case 1, 3, 4
+                    For lY = .Tiles(lIdx).Top To .Tiles(lIdx).Top + .Tiles(lIdx).Height - 1
+                        If lBytesPerPixel = 1 Then
+                            Debug.Assert IsBadReadPtr(lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4) = 0
+                            Call CopyMemory(baRow(0), ByVal lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4)
+                            For lX = 0 To .Tiles(lIdx).Width - 1
+                                baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
+                            Next
+                            pvBufferWriteBlob uTile, VarPtr(baRow(0)), .Tiles(lIdx).Width
+                        ElseIf lBytesPerPixel = 3 Then
+                            Debug.Assert IsBadReadPtr(lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4) = 0
+                            Call CopyMemory(baRow(4), ByVal lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4)
+                            For lX = 0 To .Tiles(lIdx).Width - 1
+                                baRow(lX * 3 + 0) = baRow(4 + lX * 4 + 2)
+                                baRow(lX * 3 + 1) = baRow(4 + lX * 4 + 1)
+                                baRow(lX * 3 + 2) = baRow(4 + lX * 4 + 0)
+                            Next
+                            pvBufferWriteBlob uTile, VarPtr(baRow(0)), .Tiles(lIdx).Width * 3
+                        Else
+                            pvBufferWriteBlob uTile, lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4
+                        End If
+                    Next
+                Case Else
+                    pvBufferWriteBlob uTile, 0, .Tiles(lIdx).Height * .Tiles(lIdx).Width * lBytesPerPixel
+                End Select
+                #If ImplZlib Then
+                    If m_uClientEncodings.HasTight Then
+                        '--- compression control: &H0 = no reset, use stream 0, no filter
+                        pvBufferWriteLong uOutput, &H0
+                        pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size, CompactSize:=True
+                    ElseIf m_uClientEncodings.HasZlib Then
+                        pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
+                    Else
+                        pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
+                    End If
+                #Else
+                    pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
+                #End If
+            End If
             If uOutput.Size >= uOutput.Pos + lBufferSize Then
                 If Not oSocket.HasPendingEvent Then
                     If Not pvBufferSendAsync(uOutput, oSocket) Then
@@ -1249,6 +1319,89 @@ Private Sub pvInitTightCapabilities(uCaps() As UcsTightCapabilityType, sInit As 
     Next
 End Sub
 
+Private Function pvConvertToJpeg(pOutput As stdole.IUnknown, ByVal lWidth As Long, ByVal lHeight As Long, baInput() As Byte, ByVal lQuality As Long) As Boolean
+    Const FUNC_NAME     As String = "pvConvertToJpeg"
+    Const WINCODEC_SDK_VERSION1   As Long = &H236&
+    Const WINCODEC_SDK_VERSION2   As Long = &H237&
+    Const WICBitmapEncoderNoCache As Long = 2
+    Dim aGUID(0 To 3)   As Long
+    Dim pBitmap         As stdole.IUnknown
+    Dim pWicStream      As stdole.IUnknown
+    Dim pEncoder        As stdole.IUnknown
+    Dim pFrame          As stdole.IUnknown
+    Dim pPropBag        As stdole.IUnknown
+    Dim aBag(0 To 7)    As Long
+    
+    On Error GoTo EH
+    If m_pWicFactory Is Nothing Then
+        If WICCreateImagingFactory_Proxy(WINCODEC_SDK_VERSION2, m_pWicFactory) < 0 Then
+            If pvCheckHResult(WICCreateImagingFactory_Proxy(WINCODEC_SDK_VERSION1, m_pWicFactory)) < 0 Then
+                GoTo QH
+            End If
+        End If
+    End If
+    '--- GUID_WICPixelFormat32bppPBGRA
+    aGUID(0) = &H6FDDC324
+    aGUID(1) = &H4BFE4E03
+    aGUID(2) = &H773D85B1
+    aGUID(3) = &H10C98D76
+    If pvCheckHResult(IWICImagingFactory_CreateBitmapFromMemory_Proxy(m_pWicFactory, lWidth, lHeight, aGUID(0), lWidth * 4, UBound(baInput) + 1, baInput(0), pBitmap)) < 0 Then
+        GoTo QH
+    End If
+    If pvCheckHResult(IWICImagingFactory_CreateStream_Proxy(m_pWicFactory, pWicStream)) < 0 Then
+        GoTo QH
+    End If
+    If pvCheckHResult(IWICStream_InitializeFromIStream_Proxy(pWicStream, pOutput)) < 0 Then
+        GoTo QH
+    End If
+    '--- GUID_ContainerFormatJpeg
+    aGUID(0) = &H19E4A5AA
+    aGUID(1) = &H4FC55662
+    aGUID(2) = &H5817C0A0
+    aGUID(3) = &H57108E02
+    If pvCheckHResult(IWICImagingFactory_CreateEncoder_Proxy(m_pWicFactory, aGUID(0), ByVal 0, pEncoder)) < 0 Then
+        GoTo QH
+    End If
+    If pvCheckHResult(IWICBitmapEncoder_Initialize_Proxy(pEncoder, pWicStream, WICBitmapEncoderNoCache)) < 0 Then
+        GoTo QH
+    End If
+    If pvCheckHResult(IWICBitmapEncoder_CreateNewFrame_Proxy(pEncoder, pFrame, pPropBag)) < 0 Then
+        GoTo QH
+    End If
+    aBag(3) = StrPtr("ImageQuality")
+    If pvCheckHResult(IPropertyBag2_Write_Proxy(pPropBag, 1, aBag(0), CSng(lQuality) / 100!)) < 0 Then
+        GoTo QH
+    End If
+    If pvCheckHResult(IWICBitmapFrameEncode_Initialize_Proxy(pFrame, pPropBag)) < 0 Then
+        GoTo QH
+    End If
+    If pvCheckHResult(IWICBitmapFrameEncode_SetSize_Proxy(pFrame, lWidth, lHeight)) < 0 Then
+        GoTo QH
+    End If
+    If pvCheckHResult(IWICBitmapFrameEncode_WriteSource_Proxy(pFrame, pBitmap, ByVal 0)) < 0 Then
+        GoTo QH
+    End If
+    If pvCheckHResult(IWICBitmapFrameEncode_Commit_Proxy(pFrame)) < 0 Then
+        GoTo QH
+    End If
+    If pvCheckHResult(IWICBitmapEncoder_Commit_Proxy(pEncoder)) < 0 Then
+        GoTo QH
+    End If
+    '--- success
+    pvConvertToJpeg = True
+QH:
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+End Function
+
+Private Function pvCheckHResult(ByVal hResult As Long) As Long
+    If hResult < 0 Then
+        Err.Raise hResult
+    End If
+    pvCheckHResult = pvCheckHResult
+End Function
+
 '= buffer helpers ========================================================
 
 Private Sub pvBufferWriteArray(uOutput As UcsBuffer, baSrc() As Byte)
@@ -1277,7 +1430,7 @@ Private Sub pvBufferWriteZlibBlob(uOutput As UcsBuffer, ByVal lPtr As Long, ByVa
         m_hDeflateCtx = m_oZipArchive.DeflateInit
         bFirst = True
     End If
-    If m_oZipArchive.DeflateBlob(m_hDeflateCtx, lPtr, lSize, lOutputPtr, lOutputSize, Level:=6) Then
+    If m_oZipArchive.DeflateBlob(m_hDeflateCtx, lPtr, lSize, lOutputPtr, lOutputSize, Level:=IIf(m_uClientEncodings.CompressionLevel > 0, m_uClientEncodings.CompressionLevel - 1, 6)) Then
         If CompactSize Then
             pvBufferWriteCompactLong uOutput, lOutputSize + IIf(bFirst, 2, 0)
         Else
@@ -1343,6 +1496,26 @@ Private Sub pvBufferWriteCompactLong(uOutput As UcsBuffer, ByVal lValue As Long)
             pvBufferWriteLong uOutput, lNext
         End If
     End If
+End Sub
+
+Private Sub pvBufferWriteStream(uOutput As UcsBuffer, pStream As stdole.IUnknown)
+    Dim cTemp           As Currency
+    Dim lSize           As Long
+    
+    If pvCheckHResult(IStream_Size(pStream, cTemp)) < 0 Then
+        GoTo QH
+    End If
+    lSize = cTemp * 10000
+    If lSize > 0 Then
+        pvBufferWriteBlob uOutput, 0, lSize
+        If pvCheckHResult(IStream_Reset(pStream)) < 0 Then
+            GoTo QH
+        End If
+        If pvCheckHResult(IStream_Read(pStream, uOutput.Data(uOutput.Size - lSize), lSize)) < 0 Then
+            GoTo QH
+        End If
+    End If
+QH:
 End Sub
 
 Private Function pvBufferSendAsync(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
