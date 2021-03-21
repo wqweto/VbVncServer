@@ -65,8 +65,8 @@ Private Declare Function ArrPtr Lib "msvbvm60" Alias "VarPtr" (Ptr() As Any) As 
 Private Declare Function IsBadReadPtr Lib "kernel32" (ByVal lp As Long, ByVal ucb As Long) As Long
 Private Declare Function ws_htonl Lib "ws2_32" Alias "htonl" (ByVal hostlong As Long) As Long
 Private Declare Function ws_htons Lib "ws2_32" Alias "htons" (ByVal hostshort As Long) As Integer
-Private Declare Function QueryPerformanceCounter Lib "kernel32" (lpPerformanceCount As Currency) As Long
-Private Declare Function QueryPerformanceFrequency Lib "kernel32" (lpFrequency As Currency) As Long
+'Private Declare Function QueryPerformanceCounter Lib "kernel32" (lpPerformanceCount As Currency) As Long
+'Private Declare Function QueryPerformanceFrequency Lib "kernel32" (lpFrequency As Currency) As Long
 Private Declare Function OpenInputDesktop Lib "user32" (ByVal dwFlags As Long, ByVal fInherit As Boolean, ByVal dwDesiredAccess As Long) As Long
 Private Declare Function CloseDesktop Lib "user32" (ByVal hDesktop As Long) As Long
 Private Declare Function SetThreadDesktop Lib "user32" (ByVal hDesktop As Long) As Long
@@ -94,8 +94,8 @@ Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnviron
 ' Protocol enums and types
 '=========================================================================
 
-Private Const STR_TIGHT_SERVER_CAPS         As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
-Private Const STR_TIGHT_CLIENT_CAPS         As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
+Private Const STR_TIGHT_SERVER_MSGS         As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
+Private Const STR_TIGHT_CLIENT_MSGS         As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
 Private Const STR_TIGHT_ENCODINGS           As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR"
 
 Private Enum UcsRfbProtocolStateEnum
@@ -187,6 +187,7 @@ Private Type UcsClientSetEncodingsType
     MessageType         As Integer          ' ucsMsgSetEncodings = 2
     NumberOfEncodings   As Integer
     EncodingType()      As Long
+    HasCopyRect         As Boolean
     HasZlib             As Boolean
     HasTight            As Boolean
     HasCursorWithAlphaPseudoEncoding As Boolean
@@ -244,27 +245,27 @@ Private Type UcsServerFramebufferUpdateType
 End Type
 Private Const UcsServerFramebufferUpdateSize As Long = 4
 
-Private Type UcsServerRgbValueType
-    Red                 As Integer
-    Green               As Integer
-    Blue                As Integer
-End Type
-Private Const UcsServerRgbValueSize As Long = 6
+'Private Type UcsServerRgbValueType
+'    Red                 As Integer
+'    Green               As Integer
+'    Blue                As Integer
+'End Type
+'Private Const UcsServerRgbValueSize As Long = 6
+'
+'Private Type UcsServerSetColorMapEntriesType
+'    MessageType         As Integer          ' ucsMsgSetColorMapEntries = 1
+'    FirstColor          As Integer
+'    NumberOfColors      As Integer
+''    Color()             As UcsServerRgbValueType
+'End Type
+'Private Const UcsServerSetColorMapEntriesSize As Long = 6
 
-Private Type UcsServerSetColorMapEntriesType
-    MessageType         As Integer          ' ucsMsgSetColorMapEntries = 1
-    FirstColor          As Integer
-    NumberOfColors      As Integer
-'    Color()             As UcsServerRgbValueType
-End Type
-Private Const UcsServerSetColorMapEntriesSize As Long = 6
-
-Private Type UcsServerCutTextType
-    MessageType         As Long             ' ucsMsgServerCutText = 3
-    Length              As Long
-'    Text()              As Byte
-End Type
-Private Const UcsServerCutTextSize As Long = 8
+'Private Type UcsServerCutTextType
+'    MessageType         As Long             ' ucsMsgServerCutText = 3
+'    Length              As Long
+''    Text()              As Byte
+'End Type
+'Private Const UcsServerCutTextSize As Long = 8
 
 Private Type UcsTightInteractionCapabilitiesType
     NumberOfServerMsgs  As Integer
@@ -443,8 +444,8 @@ End Function
 Private Function pvSendServerInit(uCtx As UcsCaptureContext, sName As String, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     Dim uInit           As UcsServerInitType
     Dim uInteraction    As UcsTightInteractionCapabilitiesType
-    Dim uServerCaps()   As UcsTightCapabilityType
-    Dim uClientCaps()   As UcsTightCapabilityType
+    Dim uServerMsgs()   As UcsTightCapabilityType
+    Dim uClientMsgs()   As UcsTightCapabilityType
     Dim uEncodings()    As UcsTightCapabilityType
     
     With uInit
@@ -469,15 +470,17 @@ Private Function pvSendServerInit(uCtx As UcsCaptureContext, sName As String, uO
     pvBufferWriteBlob uOutput, VarPtr(uInit), UcsServerInitSize
     pvBufferWriteArray uOutput, StrConv(sName, vbFromUnicode)
     If m_eClientSecurityType = ucsSecTight Then
-        pvGetTightCapabilities uServerCaps, uClientCaps, uEncodings
+        pvInitTightCapabilities uServerMsgs, STR_TIGHT_SERVER_MSGS
+        pvInitTightCapabilities uClientMsgs, STR_TIGHT_CLIENT_MSGS
+        pvInitTightCapabilities uEncodings, STR_TIGHT_ENCODINGS
         With uInteraction
-            .NumberOfServerMsgs = pvNetworkShort(UBound(uServerCaps) + 1)
-            .NumberOfClientMsgs = pvNetworkShort(UBound(uClientCaps) + 1)
+            .NumberOfServerMsgs = pvNetworkShort(UBound(uServerMsgs) + 1)
+            .NumberOfClientMsgs = pvNetworkShort(UBound(uClientMsgs) + 1)
             .NumberOfEncodings = pvNetworkShort(UBound(uEncodings) + 1)
         End With
         pvBufferWriteBlob uOutput, VarPtr(uInteraction), UcsTightInteractionCapabilitiesSize
-        pvBufferWriteBlob uOutput, VarPtr(uServerCaps(0)), (UBound(uServerCaps) + 1) * UcsTightCapabilitySize
-        pvBufferWriteBlob uOutput, VarPtr(uClientCaps(0)), (UBound(uClientCaps) + 1) * UcsTightCapabilitySize
+        pvBufferWriteBlob uOutput, VarPtr(uServerMsgs(0)), (UBound(uServerMsgs) + 1) * UcsTightCapabilitySize
+        pvBufferWriteBlob uOutput, VarPtr(uClientMsgs(0)), (UBound(uClientMsgs) + 1) * UcsTightCapabilitySize
         pvBufferWriteBlob uOutput, VarPtr(uEncodings(0)), (UBound(uEncodings) + 1) * UcsTightCapabilitySize
     End If
     '--- succees (or failure)
@@ -535,6 +538,8 @@ Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
                     For lIdx = 0 To .NumberOfEncodings - 1
                         .EncodingType(lIdx) = pvNetworkLong(.EncodingType(lIdx))
                         Select Case .EncodingType(lIdx)
+                        Case ucsEncCopyRect
+                            .HasCopyRect = True
                         Case ucsEncZlib
                             .HasZlib = True
                         Case ucsEncTight
@@ -1052,12 +1057,27 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
             .PointerShapeBufferSize = 0
         End If
         '--- send desktop
+        If Not m_uClientEncodings.HasCopyRect Then
+            uFrame.NumMoveRects = 0
+        End If
         lBufferSize = oSocket.SockOpt(ucsSsoSendBuffer)
         With uUpdate
             .MessageType = ucsMsgFramebufferUpdate
-            .NumberOfRectangles = pvNetworkShort(uFrame.NumTiles)
+            .NumberOfRectangles = pvNetworkShort(uFrame.NumMoveRects + uFrame.NumTiles)
         End With
         pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
+        For lIdx = 0 To .NumMoveRects - 1
+            With .MoveRects(lIdx).DestinationRect
+                uRectangle.XPosition = pvNetworkShort(.Left)
+                uRectangle.YPosition = pvNetworkShort(.Top)
+                uRectangle.Width = pvNetworkShort(.Right - .Left)
+                uRectangle.Height = pvNetworkShort(.Bottom - .Top)
+            End With
+            uRectangle.EncodingType = pvNetworkLong(ucsEncCopyRect)
+            pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
+            pvBufferWriteLong uOutput, .MoveRects(lIdx).SourcePoint.X, Size:=2
+            pvBufferWriteLong uOutput, .MoveRects(lIdx).SourcePoint.Y, Size:=2
+        Next
         For lIdx = 0 To .NumTiles - 1
             lSrcIndex = .Tiles(lIdx).SrcIndex
             uRectangle.XPosition = pvNetworkShort(.DirtyRects(lSrcIndex).Left + .Tiles(lIdx).Left)
@@ -1206,48 +1226,28 @@ EH:
     PrintError FUNC_NAME
 End Sub
 
-Private Sub pvGetTightCapabilities(uServerCaps() As UcsTightCapabilityType, uClientCaps() As UcsTightCapabilityType, uEncodings() As UcsTightCapabilityType)
+Private Sub pvInitTightCapabilities(uCaps() As UcsTightCapabilityType, sInit As String)
     Dim vSplit          As Variant
     Dim vElem           As Variant
     Dim lIdx            As Long
+    Dim sBuffer         As String
     
-    vSplit = Split(STR_TIGHT_SERVER_CAPS, "|")
-    ReDim uServerCaps(0 To UBound(vSplit)) As UcsTightCapabilityType
+    vSplit = Split(sInit, "|")
+    ReDim uCaps(0 To UBound(vSplit)) As UcsTightCapabilityType
     For Each vElem In vSplit
-        uServerCaps(lIdx) = pvToTightCapability(vElem)
-        lIdx = lIdx + 1
-    Next
-    lIdx = 0
-    vSplit = Split(STR_TIGHT_CLIENT_CAPS, "|")
-    ReDim uClientCaps(0 To UBound(vSplit)) As UcsTightCapabilityType
-    For Each vElem In vSplit
-        uClientCaps(lIdx) = pvToTightCapability(vElem)
-        lIdx = lIdx + 1
-    Next
-    lIdx = 0
-    vSplit = Split(STR_TIGHT_ENCODINGS, "|")
-    ReDim uEncodings(0 To UBound(vSplit)) As UcsTightCapabilityType
-    For Each vElem In vSplit
-        uEncodings(lIdx) = pvToTightCapability(vElem)
+        vElem = Split(vElem, ";")
+        With uCaps(lIdx)
+            .Code = pvNetworkLong(vElem(0))
+            sBuffer = vElem(1)
+            Debug.Assert Len(sBuffer) = 4
+            Call CopyMemory(.Vendor(0), ByVal sBuffer, Len(sBuffer))
+            sBuffer = vElem(2)
+            Debug.Assert Len(sBuffer) = 8
+            Call CopyMemory(.Signature(0), ByVal sBuffer, Len(sBuffer))
+        End With
         lIdx = lIdx + 1
     Next
 End Sub
-
-Private Function pvToTightCapability(ByVal sCode As String) As UcsTightCapabilityType
-    Dim vSplit          As Variant
-    Dim sBuffer         As String
-    
-    vSplit = Split(sCode, ";")
-    With pvToTightCapability
-        .Code = pvNetworkLong(vSplit(0))
-        sBuffer = vSplit(1)
-        Debug.Assert Len(sBuffer) = 4
-        Call CopyMemory(.Vendor(0), ByVal sBuffer, Len(sBuffer))
-        sBuffer = vSplit(2)
-        Debug.Assert Len(sBuffer) = 8
-        Call CopyMemory(.Signature(0), ByVal sBuffer, Len(sBuffer))
-    End With
-End Function
 
 '= buffer helpers ========================================================
 
@@ -1437,14 +1437,14 @@ Private Function Clamp( _
     End Select
 End Function
 
-Private Property Get TimerEx() As Double
-    Dim cFreq           As Currency
-    Dim cValue          As Currency
-
-    Call QueryPerformanceFrequency(cFreq)
-    Call QueryPerformanceCounter(cValue)
-    TimerEx = cValue / cFreq
-End Property
+'Private Property Get TimerEx() As Double
+'    Dim cFreq           As Currency
+'    Dim cValue          As Currency
+'
+'    Call QueryPerformanceFrequency(cFreq)
+'    Call QueryPerformanceCounter(cValue)
+'    TimerEx = cValue / cFreq
+'End Property
 
 'Private Function pvCalcAdler32(ByVal lPtr As Long, ByVal lSize As Long) As Long
 '    Const LNG_BASE      As Long = 65521
