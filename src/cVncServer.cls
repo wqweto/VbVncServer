@@ -25,7 +25,9 @@ Option Explicit
 DefObj A-Z
 Private Const MODULE_NAME As String = "cVncServer"
 
-#Const ImplZlib = VNC_NOZLIB = 0
+#Const ImplZlib = (VNC_NOZLIB = 0)
+#Const ImplNoIdeProtection = (MST_NO_IDE_PROTECTION <> 0)
+#Const ImplUseDebugLog = (USE_DEBUG_LOG <> 0)
 
 '=========================================================================
 ' API
@@ -92,8 +94,9 @@ Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnviron
 ' Protocol enums and types
 '=========================================================================
 
-Private Const STR_CLIENT_MSG_CAPABILITIES As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
-Private Const STR_SERVER_MSG_CAPABILITIES As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
+Private Const STR_TIGHT_SERVER_CAPS         As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
+Private Const STR_TIGHT_CLIENT_CAPS         As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
+Private Const STR_TIGHT_ENCODINGS           As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR"
 
 Private Enum UcsRfbProtocolStateEnum
     ucsStaNone
@@ -103,11 +106,11 @@ Private Enum UcsRfbProtocolStateEnum
     ucsStaExpectClientMessage
 End Enum
 
-Private Enum UcsRfbAutheticationEnum
-    ucsAuthInvalid = 0
-    ucsAuthNone = 1
-    ucsAuthVnc = 2
-    ucsAuthTight = 16
+Private Enum UcsRfbSecurityTypeEnum
+    ucsSecInvalid = 0
+    ucsSecNone = 1
+    ucsSecVnc = 2
+    ucsSecTight = 16
 End Enum
 
 Private Enum UcsRfbMessageEnum
@@ -263,6 +266,21 @@ Private Type UcsServerCutTextType
 End Type
 Private Const UcsServerCutTextSize As Long = 8
 
+Private Type UcsTightInteractionCapabilitiesType
+    NumberOfServerMsgs  As Integer
+    NumberOfClientMsgs  As Integer
+    NumberOfEncodings   As Integer
+    Padding             As Integer
+End Type
+Private Const UcsTightInteractionCapabilitiesSize As Long = 8
+
+Private Type UcsTightCapabilityType
+    Code                As Long
+    Vendor(0 To 3)      As Byte
+    Signature(0 To 7)   As Byte
+End Type
+Private Const UcsTightCapabilitySize As Long = 16
+
 Private Type UcsBuffer
     Data()              As Byte
     Pos                 As Long
@@ -319,6 +337,7 @@ Attribute m_oSocket.VB_VarHelpID = -1
 Private m_uRecvBuffer           As UcsBuffer
 Private m_uSendBuffer           As UcsBuffer
 Private m_cClients              As Object ' Collection
+Private m_eClientSecurityType   As UcsRfbSecurityTypeEnum
 Private m_uClientPixelFormat    As UcsClientSetPixelFormatType
 Private m_uClientEncodings      As UcsClientSetEncodingsType
 Private m_uClientFramebufferUpdate As UcsClientFramebufferUpdateRequestType
@@ -393,30 +412,40 @@ End Function
 
 Private Function pvSendProtocolVersion(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     pvBufferWriteArray uOutput, oSocket.ToTextArray(STR_PROTOCOL_VERSION)
-    If Not pvBufferSendAsync(uOutput, oSocket) Then
-        GoTo QH
-    End If
-    '--- succees
-    pvSendProtocolVersion = True
-QH:
+    '--- success (or failure)
+    pvSendProtocolVersion = pvBufferSendAsync(uOutput, oSocket)
 End Function
 
-Private Function pvSendSecurityType(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
-    Const SecurityResultOk As Long = 0
+Private Function pvSendSecurityTypes(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+    pvBufferWriteLong uOutput, 2
+    pvBufferWriteLong uOutput, ucsSecNone
+    pvBufferWriteLong uOutput, ucsSecTight
+    '--- success (or failure)
+    pvSendSecurityTypes = pvBufferSendAsync(uOutput, oSocket)
+End Function
+
+Private Function pvSendSecurityResult(ByVal lResult As Long, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+    pvBufferWriteLong uOutput, lResult, Size:=4
+    '--- success (or failure)
+    pvSendSecurityResult = pvBufferSendAsync(uOutput, oSocket)
+End Function
+
+Private Function pvSendTightSecurityType(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+    Const NumberOfTunnels As Long = 0
+    Const NumberOfAuths As Long = 0
     
-    pvBufferWriteLong uOutput, 1
-    pvBufferWriteLong uOutput, ucsAuthNone
-    pvBufferWriteLong uOutput, SecurityResultOk, Size:=4
-    If Not pvBufferSendAsync(uOutput, oSocket) Then
-        GoTo QH
-    End If
-    '--- succees
-    pvSendSecurityType = True
-QH:
+    pvBufferWriteLong uOutput, NumberOfTunnels, Size:=4
+    pvBufferWriteLong uOutput, NumberOfAuths, Size:=4
+    '--- success (or failure)
+    pvSendTightSecurityType = pvBufferSendAsync(uOutput, oSocket)
 End Function
 
-Private Function pvSendServerInit(uCtx As UcsCaptureContext, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+Private Function pvSendServerInit(uCtx As UcsCaptureContext, sName As String, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     Dim uInit           As UcsServerInitType
+    Dim uInteraction    As UcsTightInteractionCapabilitiesType
+    Dim uServerCaps()   As UcsTightCapabilityType
+    Dim uClientCaps()   As UcsTightCapabilityType
+    Dim uEncodings()    As UcsTightCapabilityType
     
     With uInit
         .FramebufferWidth = pvNetworkShort(uCtx.Width)
@@ -433,18 +462,26 @@ Private Function pvSendServerInit(uCtx As UcsCaptureContext, uOutput As UcsBuffe
             .GreenShift = 8
             .BlueShift = 0
         End With
-        .NameLength = pvNetworkLong(Len(STR_APP_NAME))
+        '--- save as default pixel format
+        m_uClientPixelFormat.PixelFormat = .ServerPixelFormat
+        .NameLength = pvNetworkLong(Len(sName))
     End With
     pvBufferWriteBlob uOutput, VarPtr(uInit), UcsServerInitSize
-    pvBufferWriteArray uOutput, StrConv(STR_APP_NAME, vbFromUnicode)
-    If Not pvBufferSendAsync(uOutput, oSocket) Then
-        GoTo QH
+    pvBufferWriteArray uOutput, StrConv(sName, vbFromUnicode)
+    If m_eClientSecurityType = ucsSecTight Then
+        pvGetTightCapabilities uServerCaps, uClientCaps, uEncodings
+        With uInteraction
+            .NumberOfServerMsgs = pvNetworkShort(UBound(uServerCaps) + 1)
+            .NumberOfClientMsgs = pvNetworkShort(UBound(uClientCaps) + 1)
+            .NumberOfEncodings = pvNetworkShort(UBound(uEncodings) + 1)
+        End With
+        pvBufferWriteBlob uOutput, VarPtr(uInteraction), UcsTightInteractionCapabilitiesSize
+        pvBufferWriteBlob uOutput, VarPtr(uServerCaps(0)), (UBound(uServerCaps) + 1) * UcsTightCapabilitySize
+        pvBufferWriteBlob uOutput, VarPtr(uClientCaps(0)), (UBound(uClientCaps) + 1) * UcsTightCapabilitySize
+        pvBufferWriteBlob uOutput, VarPtr(uEncodings(0)), (UBound(uEncodings) + 1) * UcsTightCapabilitySize
     End If
-    '--- save as default pixel format
-    m_uClientPixelFormat.PixelFormat = uInit.ServerPixelFormat
-    '--- succees
-    pvSendServerInit = True
-QH:
+    '--- succees (or failure)
+    pvSendServerInit = pvBufferSendAsync(uOutput, oSocket)
 End Function
 
 Private Function pvSendEmptyFramebufferUpdate(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
@@ -457,12 +494,8 @@ Private Function pvSendEmptyFramebufferUpdate(uOutput As UcsBuffer, oSocket As c
     End With
     pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
     pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
-    If Not pvBufferSendAsync(uOutput, oSocket) Then
-        GoTo QH
-    End If
-    '--- success
-    pvSendEmptyFramebufferUpdate = True
-QH:
+    '--- success (or failure)
+    pvSendEmptyFramebufferUpdate = pvBufferSendAsync(uOutput, oSocket)
 End Function
 
 Private Function pvParseClientMessage(uInput As UcsBuffer) As Boolean
@@ -1173,6 +1206,49 @@ EH:
     PrintError FUNC_NAME
 End Sub
 
+Private Sub pvGetTightCapabilities(uServerCaps() As UcsTightCapabilityType, uClientCaps() As UcsTightCapabilityType, uEncodings() As UcsTightCapabilityType)
+    Dim vSplit          As Variant
+    Dim vElem           As Variant
+    Dim lIdx            As Long
+    
+    vSplit = Split(STR_TIGHT_SERVER_CAPS, "|")
+    ReDim uServerCaps(0 To UBound(vSplit)) As UcsTightCapabilityType
+    For Each vElem In vSplit
+        uServerCaps(lIdx) = pvToTightCapability(vElem)
+        lIdx = lIdx + 1
+    Next
+    lIdx = 0
+    vSplit = Split(STR_TIGHT_CLIENT_CAPS, "|")
+    ReDim uClientCaps(0 To UBound(vSplit)) As UcsTightCapabilityType
+    For Each vElem In vSplit
+        uClientCaps(lIdx) = pvToTightCapability(vElem)
+        lIdx = lIdx + 1
+    Next
+    lIdx = 0
+    vSplit = Split(STR_TIGHT_ENCODINGS, "|")
+    ReDim uEncodings(0 To UBound(vSplit)) As UcsTightCapabilityType
+    For Each vElem In vSplit
+        uEncodings(lIdx) = pvToTightCapability(vElem)
+        lIdx = lIdx + 1
+    Next
+End Sub
+
+Private Function pvToTightCapability(ByVal sCode As String) As UcsTightCapabilityType
+    Dim vSplit          As Variant
+    Dim sBuffer         As String
+    
+    vSplit = Split(sCode, ";")
+    With pvToTightCapability
+        .Code = pvNetworkLong(vSplit(0))
+        sBuffer = vSplit(1)
+        Debug.Assert Len(sBuffer) = 4
+        Call CopyMemory(.Vendor(0), ByVal sBuffer, Len(sBuffer))
+        sBuffer = vSplit(2)
+        Debug.Assert Len(sBuffer) = 8
+        Call CopyMemory(.Signature(0), ByVal sBuffer, Len(sBuffer))
+    End With
+End Function
+
 '= buffer helpers ========================================================
 
 Private Sub pvBufferWriteArray(uOutput As UcsBuffer, baSrc() As Byte)
@@ -1406,6 +1482,7 @@ End Sub
 
 Private Sub m_oSocket_OnReceive()
     Const FUNC_NAME     As String = "m_oSocket_OnReceive"
+    Const SecurityResultOk As Long = 0
     Dim baBuffer()      As Byte
     Dim vElem           As Variant
     
@@ -1431,16 +1508,36 @@ Private Sub m_oSocket_OnReceive()
                     End If
                     '--- ignore client protocol version
                     .Pos = .Pos + Len(STR_PROTOCOL_VERSION)
-                    If Not pvSendSecurityType(m_uSendBuffer, m_oSocket) Then
+                    If Not pvSendSecurityTypes(m_uSendBuffer, m_oSocket) Then
                         m_eState = ucsStaNone
                         GoTo QH
                     End If
                     m_eState = ucsStaExpectSecurityHandshake
                 Case ucsStaExpectSecurityHandshake
-                    '--- ignore security type
-                    Debug.Assert .Data(.Pos) = ucsAuthNone
+                    m_eClientSecurityType = .Data(.Pos)
                     .Pos = .Pos + 1
-                    m_eState = ucsStaExpectClientInit
+                    Select Case m_eClientSecurityType
+                    Case ucsSecNone
+                        If Not pvSendSecurityResult(SecurityResultOk, m_uSendBuffer, m_oSocket) Then
+                            m_eState = ucsStaNone
+                            GoTo QH
+                        End If
+                        m_eState = ucsStaExpectClientInit
+                    Case ucsSecTight
+                        If Not pvSendTightSecurityType(m_uSendBuffer, m_oSocket) Then
+                            m_eState = ucsStaNone
+                            GoTo QH
+                        End If
+                        If Not pvSendSecurityResult(SecurityResultOk, m_uSendBuffer, m_oSocket) Then
+                            m_eState = ucsStaNone
+                            GoTo QH
+                        End If
+                        m_eState = ucsStaExpectClientInit
+                    Case Else
+                        Debug.Print "Unknown security type (" & .Data(.Pos) & ")"
+                        m_eState = ucsStaNone
+                        GoTo QH
+                    End Select
                 Case ucsStaExpectClientInit
                     '--- ignore shared flag
                     .Pos = .Pos + 1
@@ -1454,7 +1551,7 @@ Private Sub m_oSocket_OnReceive()
                         ReDim .PointerShape(0 To 0) As Byte
                         ReDim .Tiles(0 To 31) As UcsCaptureTile
                     End With
-                    If Not pvSendServerInit(m_uCaptureCtx, m_uSendBuffer, m_oSocket) Then
+                    If Not pvSendServerInit(m_uCaptureCtx, STR_APP_NAME, m_uSendBuffer, m_oSocket) Then
                         m_eState = ucsStaNone
                         GoTo QH
                     End If
@@ -1616,5 +1713,3 @@ Private Sub Class_Terminate()
     End If
 End Sub
 #End If
-
-
