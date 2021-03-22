@@ -1,22 +1,42 @@
 VERSION 5.00
 Begin VB.Form Form1 
    Caption         =   "Form1"
-   ClientHeight    =   2316
+   ClientHeight    =   8232
    ClientLeft      =   108
    ClientTop       =   456
-   ClientWidth     =   3624
+   ClientWidth     =   4260
    LinkTopic       =   "Form1"
-   ScaleHeight     =   2316
-   ScaleWidth      =   3624
+   ScaleHeight     =   8232
+   ScaleWidth      =   4260
    StartUpPosition =   3  'Windows Default
+   Begin VB.Label labDebug 
+      AutoSize        =   -1  'True
+      BackStyle       =   0  'Transparent
+      BeginProperty Font 
+         Name            =   "Consolas"
+         Size            =   7.8
+         Charset         =   204
+         Weight          =   400
+         Underline       =   0   'False
+         Italic          =   0   'False
+         Strikethrough   =   0   'False
+      EndProperty
+      Height          =   180
+      Index           =   0
+      Left            =   168
+      TabIndex        =   1
+      Top             =   336
+      UseMnemonic     =   0   'False
+      Width           =   84
+   End
    Begin VB.Label Label1 
       AutoSize        =   -1  'True
       BackStyle       =   0  'Transparent
       Caption         =   "Label1"
       Height          =   192
-      Left            =   252
+      Left            =   168
       TabIndex        =   0
-      Top             =   504
+      Top             =   84
       UseMnemonic     =   0   'False
       Width           =   492
    End
@@ -33,6 +53,13 @@ Private m_oServer As cVncServer
 Private Sub Form_Load()
     Dim sAddress        As String
     Dim lPort           As Long
+    Dim lIdx            As Long
+    
+    For lIdx = 1 To 100
+        Load labDebug(lIdx)
+        labDebug(lIdx).Move labDebug(lIdx - 1).Left, labDebug(lIdx - 1).Top + 240
+        labDebug(lIdx).Visible = True
+    Next
     
     Set m_oServer = New cVncServer
     If Not m_oServer.Init("0.0.0.0", 5900) Then

@@ -65,8 +65,6 @@ Private Declare Function ArrPtr Lib "msvbvm60" Alias "VarPtr" (Ptr() As Any) As 
 Private Declare Function IsBadReadPtr Lib "kernel32" (ByVal lp As Long, ByVal ucb As Long) As Long
 Private Declare Function ws_htonl Lib "ws2_32" Alias "htonl" (ByVal hostlong As Long) As Long
 Private Declare Function ws_htons Lib "ws2_32" Alias "htons" (ByVal hostshort As Long) As Integer
-'Private Declare Function QueryPerformanceCounter Lib "kernel32" (lpPerformanceCount As Currency) As Long
-'Private Declare Function QueryPerformanceFrequency Lib "kernel32" (lpFrequency As Currency) As Long
 Private Declare Function OpenInputDesktop Lib "user32" (ByVal dwFlags As Long, ByVal fInherit As Boolean, ByVal dwDesiredAccess As Long) As Long
 Private Declare Function CloseDesktop Lib "user32" (ByVal hDesktop As Long) As Long
 Private Declare Function SetThreadDesktop Lib "user32" (ByVal hDesktop As Long) As Long
@@ -223,8 +221,8 @@ Private Type UcsClientSetEncodingsType
     HasCopyRect         As Boolean
     HasZlib             As Boolean
     HasTight            As Boolean
-    HasCursorWithAlphaPseudoEncoding As Boolean
-    HasCursorPseudoEncoding As Boolean
+    HasCursorWithAlpha  As Boolean
+    HasCursor           As Boolean
     CompressionLevel    As Long
     JpegQualityLevel    As Long
 End Type
@@ -362,6 +360,7 @@ End Type
 
 Private Const STR_APP_NAME          As String = "VbVncServer"
 Private Const STR_PROTOCOL_VERSION  As String = "RFB 003.008" & vbLf
+Private Const TILE_SIZE             As Long = 256
 
 Private m_eState                As UcsRfbProtocolStateEnum
 Private WithEvents m_oSocket    As cAsyncSocket
@@ -662,6 +661,13 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 ReDim m_uClientEncodings.EncodingType(0 To m_uClientEncodings.NumberOfEncodings - 1) As Long
                 Call CopyMemory(m_uClientEncodings.EncodingType(0), .Data(.Pos + UcsClientSetEncodingsSize), m_uClientEncodings.NumberOfEncodings * 4)
                 With m_uClientEncodings
+                    .HasCopyRect = False
+                    .HasZlib = False
+                    .HasTight = False
+                    .HasCursorWithAlpha = False
+                    .HasCursor = False
+                    .CompressionLevel = 0
+                    .JpegQualityLevel = 0
                     For lIdx = 0 To .NumberOfEncodings - 1
                         .EncodingType(lIdx) = pvNetworkLong(.EncodingType(lIdx))
                         Select Case .EncodingType(lIdx)
@@ -672,9 +678,9 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                         Case ucsEncTight
                             .HasTight = True
                         Case ucsPsEncCursorWithAlpha
-                            .HasCursorWithAlphaPseudoEncoding = True
+                            .HasCursorWithAlpha = True
                         Case ucsPsEncCursor
-                            .HasCursorPseudoEncoding = True
+                            .HasCursor = True
                         Case ucsPsEncCompressionLevelLow To ucsPsEncCompressionLevelHigh
                             .CompressionLevel = .EncodingType(lIdx) - ucsPsEncCompressionLevelLow + 1
                         Case ucsPsEncJpegQualityLevelLow To ucsPsEncJpegQualityLevelHigh
@@ -1089,6 +1095,7 @@ End Function
 
 Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFrame, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     Const FUNC_NAME     As String = "pvCaptureSend"
+    Const LEVEL_CUTOFF  As Long = 85
     Dim lIdx            As Long
     Dim lX              As Long
     Dim lY              As Long
@@ -1109,7 +1116,15 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
     Dim bAndFlag        As Boolean
     Dim bXorFlag        As Boolean
     Dim pJpegStream     As stdole.IUnknown
-    Dim cSize           As Currency
+    Dim cTemp           As Currency
+    Dim lSize           As Long
+    Dim lColor1         As Long
+    Dim lColor2         As Long
+    Dim aHistogram()    As Long
+    Dim lQualityLevel   As Long
+#If ImplUseDebugLog Then
+    Dim sDebugInfo      As String
+#End If
     
     On Error GoTo EH
     If Not pvCapturePrepareTiles(uFrame) Then
@@ -1121,10 +1136,14 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
             pvCapturePrepareLut baRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
             pvCapturePrepareLut baGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
             pvCapturePrepareLut baBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
+        Else
+            pvCapturePrepareLut baRedLut, 7, 2 ^ 5
+            pvCapturePrepareLut baGreenLut, 7, 2 ^ 2
+            pvCapturePrepareLut baBlueLut, 3, 2 ^ 0
         End If
         pvArrayAllocate baRow, uCtx.Width * 4, FUNC_NAME & ".baRow"
         '--- send pointer
-        If .PointerShapeBufferSize > 0 And m_uClientEncodings.HasCursorPseudoEncoding Then
+        If .PointerShapeBufferSize > 0 And m_uClientEncodings.HasCursor Then
             Select Case .PointerInfo.Type
             Case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME
                 If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME Then
@@ -1145,14 +1164,14 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     .YPosition = pvNetworkShort(uFrame.PointerInfo.HotSpot.Y)
                     .Width = pvNetworkShort(uFrame.PointerInfo.Width)
                     .Height = pvNetworkShort(uFrame.PointerInfo.Height)
-                    If uFrame.PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And m_uClientEncodings.HasCursorWithAlphaPseudoEncoding Then
+                    If uFrame.PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And m_uClientEncodings.HasCursorWithAlpha Then
                         .EncodingType = pvNetworkLong(ucsPsEncCursorWithAlpha)
                     Else
                         .EncodingType = pvNetworkLong(ucsPsEncCursor)
                     End If
                 End With
                 pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
-                If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And m_uClientEncodings.HasCursorWithAlphaPseudoEncoding Then
+                If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And m_uClientEncodings.HasCursorWithAlpha Then
                     pvBufferWriteLong uOutput, pvNetworkLong(ucsEncRaw), Size:=4
                     pvBufferWriteBlob uOutput, VarPtr(.PointerShape(0)), .PointerInfo.Height * .PointerInfo.Width * 4
                 ElseIf .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
@@ -1217,50 +1236,72 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
             pvBufferWriteLong uOutput, .MoveRects(lIdx).SourcePoint.Y, Size:=2
         Next
         For lIdx = 0 To .NumTiles - 1
+            #If ImplUseDebugLog Then
+                sDebugInfo = lIdx & "/" & .NumTiles & ": " & .Tiles(lIdx).Left & "," & .Tiles(lIdx).Top
+                sDebugInfo = sDebugInfo & Space$(17 - Len(sDebugInfo))
+            #End If
             lSrcIndex = .Tiles(lIdx).SrcIndex
             uRectangle.XPosition = pvNetworkShort(.DirtyRects(lSrcIndex).Left + .Tiles(lIdx).Left)
             uRectangle.YPosition = pvNetworkShort(.DirtyRects(lSrcIndex).Top + .Tiles(lIdx).Top)
             uRectangle.Width = pvNetworkShort(.Tiles(lIdx).Width)
             uRectangle.Height = pvNetworkShort(.Tiles(lIdx).Height)
-            #If ImplZlib Then
-                If m_uClientEncodings.HasTight Then
-                    uRectangle.EncodingType = pvNetworkLong(ucsEncTight)
-                    If lBytesPerPixel = 4 Then
-                        lBytesPerPixel = 3
-                    End If
-                ElseIf m_uClientEncodings.HasZlib Then
-                    uRectangle.EncodingType = pvNetworkLong(ucsEncZlib)
-                Else
-                    uRectangle.EncodingType = pvNetworkLong(ucsEncRaw)
-                End If
-            #Else
-                If m_uClientEncodings.HasTight And m_uClientEncodings.JpegQualityLevel > 0 And lBytesPerPixel > 1 Then
-                    uRectangle.EncodingType = pvNetworkLong(ucsEncTight)
-                Else
-                    uRectangle.EncodingType = pvNetworkLong(ucsEncRaw)
-                End If
-            #End If
-            pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
+            '--- delay sending encoding
+            pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize - 4
             lPitch = (.DirtyRects(lSrcIndex).Right - .DirtyRects(lSrcIndex).Left) * 4
             lPtr = VarPtr(.DirtyBuffers(lSrcIndex).Data(0))
             uTile.Size = 0
             If m_uClientEncodings.HasTight And m_uClientEncodings.JpegQualityLevel > 0 And lBytesPerPixel > 1 Then
+                ReDim aHistogram(0 To 255) As Long
                 For lY = .Tiles(lIdx).Top To .Tiles(lIdx).Top + .Tiles(lIdx).Height - 1
+                    lSize = uTile.Size
                     pvBufferWriteBlob uTile, lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4
+                    For lX = 0 To .Tiles(lIdx).Width - 1
+                        lColor1 = baRedLut(uTile.Data(lSize + lX * 4 + 2)) Or baGreenLut(uTile.Data(lSize + lX * 4 + 1)) Or baBlueLut(uTile.Data(lSize + lX * 4 + 0))
+                        aHistogram(lColor1) = aHistogram(lColor1) + 1
+                    Next
                 Next
+                lColor1 = 0
+                lColor2 = 0
+                For lX = 0 To 255
+                    If aHistogram(lX) > lColor1 Then
+                        lColor2 = lColor1
+                        lColor1 = aHistogram(lX)
+                    End If
+                Next
+                cTemp = (lColor1 + lColor2) * 100 / (.Tiles(lIdx).Width * .Tiles(lIdx).Height)
+                lQualityLevel = m_uClientEncodings.JpegQualityLevel * 10
+                If cTemp > LEVEL_CUTOFF Then
+                    lQualityLevel = lQualityLevel + (100 - lQualityLevel) * (cTemp - LEVEL_CUTOFF) / (100 - LEVEL_CUTOFF)
+                Else
+                    lQualityLevel = lQualityLevel * cTemp / LEVEL_CUTOFF
+                End If
+                #If ImplUseDebugLog Then
+                    sDebugInfo = sDebugInfo & " H=" & Format$(cTemp, "0.00") & " QL=" & lQualityLevel
+                #End If
                 Set pJpegStream = Nothing
                 Set pJpegStream = SHCreateMemStream(ByVal 0, 0)
-                If Not pvConvertToJpeg(pJpegStream, .Tiles(lIdx).Width, .Tiles(lIdx).Height, uTile.Data, m_uClientEncodings.JpegQualityLevel * 10) Then
+                If Not pvConvertToJpeg(pJpegStream, .Tiles(lIdx).Width, .Tiles(lIdx).Height, uTile.Data, Clamp(lQualityLevel, 1, 100)) Then
                     GoTo QH
                 End If
-                If pvCheckHResult(IStream_Size(pJpegStream, cSize)) < 0 Then
+                If pvCheckHResult(IStream_Size(pJpegStream, cTemp)) < 0 Then
                     GoTo QH
                 End If
+                lSize = cTemp * 10000
+                #If ImplUseDebugLog Then
+                    cTemp = lSize * 100 / (.Tiles(lIdx).Width * .Tiles(lIdx).Height * 4)
+                    sDebugInfo = sDebugInfo & " JPG=" & Format$(cTemp, "0.00") & "%"
+                #End If
+                pvBufferWriteLong uOutput, ucsEncTight, Size:=4
                 '--- compression control: &H90 = no reset, JpegCompression
                 pvBufferWriteLong uOutput, &H90
-                pvBufferWriteCompactLong uOutput, cSize * 10000
+                pvBufferWriteCompactLong uOutput, lSize
                 pvBufferWriteStream uOutput, pJpegStream
             Else
+                #If ImplZlib Then
+                    If m_uClientEncodings.HasTight And m_uClientEncodings.CompressionLevel > 0 And lBytesPerPixel = 4 Then
+                        lBytesPerPixel = 3
+                    End If
+                #End If
                 Select Case lBytesPerPixel
                 Case 1, 3, 4
                     For lY = .Tiles(lIdx).Top To .Tiles(lIdx).Top + .Tiles(lIdx).Height - 1
@@ -1288,19 +1329,33 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     pvBufferWriteBlob uTile, 0, .Tiles(lIdx).Height * .Tiles(lIdx).Width * lBytesPerPixel
                 End Select
                 #If ImplZlib Then
-                    If m_uClientEncodings.HasTight Then
+                    If m_uClientEncodings.HasTight And m_uClientEncodings.CompressionLevel > 0 Then
+                        pvBufferWriteLong uOutput, ucsEncTight, Size:=4
+                        lSize = uOutput.Size
                         '--- compression control: &H0 = no reset, use stream 0, no filter
                         pvBufferWriteLong uOutput, &H0
                         pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size, CompactSize:=True
+                        #If ImplUseDebugLog Then
+                            cTemp = (uOutput.Size - lSize) * 100 / (.Tiles(lIdx).Width * .Tiles(lIdx).Height * 4)
+                            sDebugInfo = sDebugInfo & " ZLib=" & Format$(cTemp, "0.00") & "%"
+                        #End If
                     ElseIf m_uClientEncodings.HasZlib Then
+                        pvBufferWriteLong uOutput, ucsEncZlib, Size:=4
                         pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
                     Else
+                        pvBufferWriteLong uOutput, ucsEncRaw, Size:=4
                         pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
                     End If
                 #Else
+                    pvBufferWriteLong uOutput, ucsEncRaw, Size:=4
                     pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
                 #End If
             End If
+            #If ImplUseDebugLog Then
+                If lIdx <= Form1.labDebug.UBound Then
+                    Form1.labDebug(lIdx).Caption = sDebugInfo
+                End If
+            #End If
             If uOutput.Size >= uOutput.Pos + lBufferSize Then
                 If Not oSocket.HasPendingEvent Then
                     If Not pvBufferSendAsync(uOutput, oSocket) Then
@@ -1320,6 +1375,11 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                 End If
             End If
         Next
+        #If ImplUseDebugLog Then
+            For lIdx = .NumTiles To Form1.labDebug.UBound
+                Form1.labDebug(lIdx).Caption = vbNullString
+            Next
+        #End If
         .NumTiles = 0
     End With
     If uOutput.Size = 0 Then
@@ -1335,7 +1395,6 @@ End Function
 
 Private Function pvCapturePrepareTiles(uFrame As UcsCaptureFrame) As Boolean
     Const FUNC_NAME     As String = "pvCapturePrepareTiles"
-    Const TILE_SIZE     As Long = 256
     Dim lIdx            As Long
     Dim lWidth          As Long
     Dim lHeight         As Long
@@ -1699,15 +1758,6 @@ Private Function Clamp( _
         Clamp = lMax
     End Select
 End Function
-
-'Private Property Get TimerEx() As Double
-'    Dim cFreq           As Currency
-'    Dim cValue          As Currency
-'
-'    Call QueryPerformanceFrequency(cFreq)
-'    Call QueryPerformanceCounter(cValue)
-'    TimerEx = cValue / cFreq
-'End Property
 
 'Private Function pvCalcAdler32(ByVal lPtr As Long, ByVal lSize As Long) As Long
 '    Const LNG_BASE      As Long = 65521
