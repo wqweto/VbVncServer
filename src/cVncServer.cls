@@ -174,6 +174,7 @@ Private Enum UcsRdfEncodingEnum
     ucsEncJRLE2 = 24
     ucsPsEncCursorWithAlpha = -314
     ucsPsEncExtendedDesktopSize = -308
+    ucsEncTightPNG = -260
     ucsPsEncCompressionLevelLow = -256
     ucsPsEncCompressionLevelHigh = -247
     ucsPsEncCursor = -239
@@ -383,6 +384,9 @@ Private m_pTimer                As IUnknown
     Private m_hDeflateCtx       As Long
 #End If
 Private m_pWicFactory           As stdole.IUnknown
+Private m_aWicFormatJpeg()      As Long
+Private m_aWicFormatPng()       As Long
+Private m_aWicFormat32bppPBGRA() As Long
 
 '=========================================================================
 ' Error handling
@@ -432,11 +436,33 @@ QH:
 End Function
 
 Public Function Accept(oSocket As cAsyncSocket) As Boolean
+    Const WINCODEC_SDK_VERSION1   As Long = &H236&
+    Const WINCODEC_SDK_VERSION2   As Long = &H237&
+    
     Set m_oSocket = oSocket
     If Not pvSendProtocolVersion(m_uSendBuffer, m_oSocket) Then
         GoTo QH
     End If
     m_eState = ucsStaExpectProtocolVersion
+    '--- init WIC state
+    If WICCreateImagingFactory_Proxy(WINCODEC_SDK_VERSION2, m_pWicFactory) < 0 Then
+        Call WICCreateImagingFactory_Proxy(WINCODEC_SDK_VERSION1, m_pWicFactory)
+    End If
+    ReDim m_aWicFormatJpeg(0 To 3) As Long
+    m_aWicFormatJpeg(0) = &H19E4A5AA
+    m_aWicFormatJpeg(1) = &H4FC55662
+    m_aWicFormatJpeg(2) = &H5817C0A0
+    m_aWicFormatJpeg(3) = &H57108E02
+    ReDim m_aWicFormatPng(0 To 3) As Long
+    m_aWicFormatPng(0) = &H1B7CFAF4
+    m_aWicFormatPng(1) = &H473C713F
+    m_aWicFormatPng(2) = &H3761CDBB
+    m_aWicFormatPng(3) = &HAFAE5F42
+    ReDim m_aWicFormat32bppPBGRA(0 To 3) As Long
+    m_aWicFormat32bppPBGRA(0) = &H6FDDC324
+    m_aWicFormat32bppPBGRA(1) = &H4BFE4E03
+    m_aWicFormat32bppPBGRA(2) = &H773D85B1
+    m_aWicFormat32bppPBGRA(3) = &H10C98D76
     '--- success
     Accept = True
 QH:
@@ -685,8 +711,9 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                             .CompressionLevel = .EncodingType(lIdx) - ucsPsEncCompressionLevelLow + 1
                         Case ucsPsEncJpegQualityLevelLow To ucsPsEncJpegQualityLevelHigh
                             .JpegQualityLevel = .EncodingType(lIdx) - ucsPsEncJpegQualityLevelLow + 1
-                        Case ucsEncRaw, ucsEncRRE, ucsEncCoRRE, ucsEncHextile, ucsEncZlibHextile, ucsEncUltra, ucsEncUltra2, ucsEncTRLE, ucsEncZRLE, ucsEncHitachiZYWRLE, _
-                                ucsEncJPEG, ucsEncJRLE, ucsEncJRLE2, ucsPsEncExtendedDesktopSize, ucsPsEncPointerPosition, ucsPsEncLastRect, ucsPsEncDesktopSize, ucsPsEncExtendedClipboard
+                        Case ucsEncRaw, ucsEncRRE, ucsEncCoRRE, ucsEncHextile, ucsEncZlibHextile, ucsEncUltra, ucsEncUltra2, ucsEncTRLE, ucsEncZRLE, _
+                                ucsEncHitachiZYWRLE, ucsEncJPEG, ucsEncJRLE, ucsEncJRLE2, ucsEncTightPNG, _
+                                ucsPsEncExtendedDesktopSize, ucsPsEncPointerPosition, ucsPsEncLastRect, ucsPsEncDesktopSize, ucsPsEncExtendedClipboard
                             '--- do nothing
                         Case Else
 '                            Debug.Print "Unknown encoding type " & .EncodingType(lIdx) & " (&H" & Hex$(.EncodingType(lIdx)) & ")"
@@ -856,7 +883,6 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
     Dim lJdx            As Long
     Dim pAdapter        As IDXGIAdapter1
     Dim pOutput         As IDXGIOutput1
-    Dim pOutput5        As IDXGIOutput5
     Dim uOutputDesc     As DXGI_OUTPUT_DESC
     Dim hResult         As Long
     Dim pD3D11Device    As ID3D11Device
@@ -924,22 +950,9 @@ Continue:
         Set pDXGIDevice = pD3D11Device
         pDXGIDevice.SetGPUThreadPriority 7
         pDXGIDevice.SetMaximumFrameLatency 1
-        If TypeOf pOutput Is IDXGIOutput5 Then
-            Set pOutput5 = pOutput
-            Dim aFormats(0 To 3) As DXGI_FORMAT
-            aFormats(0) = DXGI_FORMAT_B8G8R8A8_UNORM
-            aFormats(1) = DXGI_FORMAT_R8G8B8A8_UNORM
-            aFormats(2) = DXGI_FORMAT_R10G10B10A2_UNORM
-            aFormats(3) = DXGI_FORMAT_R16G16B16A16_FLOAT
-            hResult = pOutput5.DuplicateOutput1(pD3D11Device, 0, UBound(aFormats) + 1, aFormats(0), .Duplication)
-            If hResult < 0 Then
-                Err.Raise hResult, "IDXGIOutput5.DuplicateOutput1"
-            End If
-        Else
-            hResult = pOutput.DuplicateOutput(pD3D11Device, .Duplication)
-            If hResult < 0 Then
-                Err.Raise hResult, "IDXGIOutput1.DuplicateOutput"
-            End If
+        hResult = pOutput.DuplicateOutput(pD3D11Device, .Duplication)
+        If hResult < 0 Then
+            Err.Raise hResult, "IDXGIOutput1.DuplicateOutput"
         End If
         .Duplication.GetDesc uDuplDesc
         .InSystemMemory = (uDuplDesc.DesktopImageInSystemMemory <> 0)
@@ -1115,7 +1128,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
     Dim baMask()        As Byte
     Dim bAndFlag        As Boolean
     Dim bXorFlag        As Boolean
-    Dim pJpegStream     As stdole.IUnknown
+    Dim pImageStream    As stdole.IUnknown
     Dim cTemp           As Currency
     Dim lSize           As Long
     Dim lColor1         As Long
@@ -1146,7 +1159,14 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
         If .PointerShapeBufferSize > 0 And m_uClientEncodings.HasCursor Then
             Select Case .PointerInfo.Type
             Case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME
-                If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME Then
+                If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
+                    For lIdx = 0 To UBound(.PointerShape) Step 4
+                        '--- swap BGRA to RGBA quads
+                        lPtr = .PointerShape(lIdx)
+                        .PointerShape(lIdx) = .PointerShape(lIdx + 2)
+                        .PointerShape(lIdx + 2) = lPtr
+                    Next
+                Else
                     .PointerInfo.Height = .PointerInfo.Height \ 2
                 End If
                 lPitch = ((.PointerInfo.Width + 7) \ 8)
@@ -1278,12 +1298,13 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                 #If ImplUseDebugLog Then
                     sDebugInfo = sDebugInfo & " H=" & Format$(cTemp, "0.00") & " QL=" & lQualityLevel
                 #End If
-                Set pJpegStream = Nothing
-                Set pJpegStream = SHCreateMemStream(ByVal 0, 0)
-                If Not pvConvertToJpeg(pJpegStream, .Tiles(lIdx).Width, .Tiles(lIdx).Height, uTile.Data, Clamp(lQualityLevel, 1, 100)) Then
+                Set pImageStream = Nothing
+                Set pImageStream = SHCreateMemStream(ByVal 0, 0)
+                If Not pvWicConvertImage(pImageStream, m_aWicFormatJpeg, Clamp(lQualityLevel, 1, 100), _
+                        uTile.Data, .Tiles(lIdx).Width, .Tiles(lIdx).Height, m_aWicFormat32bppPBGRA) Then
                     GoTo QH
                 End If
-                If pvCheckHResult(IStream_Size(pJpegStream, cTemp)) < 0 Then
+                If pvCheckHResult(IStream_Size(pImageStream, cTemp)) < 0 Then
                     GoTo QH
                 End If
                 lSize = cTemp * 10000
@@ -1295,7 +1316,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                 '--- compression control: &H90 = no reset, JpegCompression
                 pvBufferWriteLong uOutput, &H90
                 pvBufferWriteCompactLong uOutput, lSize
-                pvBufferWriteStream uOutput, pJpegStream
+                pvBufferWriteStream uOutput, pImageStream
             Else
                 #If ImplZlib Then
                     If m_uClientEncodings.HasTight And m_uClientEncodings.CompressionLevel > 0 And lBytesPerPixel = 4 Then
@@ -1468,12 +1489,16 @@ Private Sub pvInitTightCapabilities(uCaps() As UcsTightCapabilityType, sInit As 
     Next
 End Sub
 
-Private Function pvConvertToJpeg(pOutput As stdole.IUnknown, ByVal lWidth As Long, ByVal lHeight As Long, baInput() As Byte, ByVal lQuality As Long) As Boolean
-    Const FUNC_NAME     As String = "pvConvertToJpeg"
-    Const WINCODEC_SDK_VERSION1   As Long = &H236&
-    Const WINCODEC_SDK_VERSION2   As Long = &H237&
+Private Function pvWicConvertImage( _
+            pOutput As stdole.IUnknown, _
+            aContainerFormat() As Long, _
+            ByVal lImageQuality As Long, _
+            baInput() As Byte, _
+            ByVal lWidth As Long, _
+            ByVal lHeight As Long, _
+            aPixelFormat() As Long) As Boolean
+    Const FUNC_NAME     As String = "pvWicConvertImage"
     Const WICBitmapEncoderNoCache As Long = 2
-    Dim aGUID(0 To 3)   As Long
     Dim pBitmap         As stdole.IUnknown
     Dim pWicStream      As stdole.IUnknown
     Dim pEncoder        As stdole.IUnknown
@@ -1482,19 +1507,7 @@ Private Function pvConvertToJpeg(pOutput As stdole.IUnknown, ByVal lWidth As Lon
     Dim aBag(0 To 7)    As Long
     
     On Error GoTo EH
-    If m_pWicFactory Is Nothing Then
-        If WICCreateImagingFactory_Proxy(WINCODEC_SDK_VERSION2, m_pWicFactory) < 0 Then
-            If pvCheckHResult(WICCreateImagingFactory_Proxy(WINCODEC_SDK_VERSION1, m_pWicFactory)) < 0 Then
-                GoTo QH
-            End If
-        End If
-    End If
-    '--- GUID_WICPixelFormat32bppPBGRA
-    aGUID(0) = &H6FDDC324
-    aGUID(1) = &H4BFE4E03
-    aGUID(2) = &H773D85B1
-    aGUID(3) = &H10C98D76
-    If pvCheckHResult(IWICImagingFactory_CreateBitmapFromMemory_Proxy(m_pWicFactory, lWidth, lHeight, aGUID(0), lWidth * 4, UBound(baInput) + 1, baInput(0), pBitmap)) < 0 Then
+    If pvCheckHResult(IWICImagingFactory_CreateBitmapFromMemory_Proxy(m_pWicFactory, lWidth, lHeight, aPixelFormat(0), lWidth * 4, UBound(baInput) + 1, baInput(0), pBitmap)) < 0 Then
         GoTo QH
     End If
     If pvCheckHResult(IWICImagingFactory_CreateStream_Proxy(m_pWicFactory, pWicStream)) < 0 Then
@@ -1503,12 +1516,7 @@ Private Function pvConvertToJpeg(pOutput As stdole.IUnknown, ByVal lWidth As Lon
     If pvCheckHResult(IWICStream_InitializeFromIStream_Proxy(pWicStream, pOutput)) < 0 Then
         GoTo QH
     End If
-    '--- GUID_ContainerFormatJpeg
-    aGUID(0) = &H19E4A5AA
-    aGUID(1) = &H4FC55662
-    aGUID(2) = &H5817C0A0
-    aGUID(3) = &H57108E02
-    If pvCheckHResult(IWICImagingFactory_CreateEncoder_Proxy(m_pWicFactory, aGUID(0), ByVal 0, pEncoder)) < 0 Then
+    If pvCheckHResult(IWICImagingFactory_CreateEncoder_Proxy(m_pWicFactory, aContainerFormat(0), ByVal 0, pEncoder)) < 0 Then
         GoTo QH
     End If
     If pvCheckHResult(IWICBitmapEncoder_Initialize_Proxy(pEncoder, pWicStream, WICBitmapEncoderNoCache)) < 0 Then
@@ -1517,9 +1525,11 @@ Private Function pvConvertToJpeg(pOutput As stdole.IUnknown, ByVal lWidth As Lon
     If pvCheckHResult(IWICBitmapEncoder_CreateNewFrame_Proxy(pEncoder, pFrame, pPropBag)) < 0 Then
         GoTo QH
     End If
-    aBag(3) = StrPtr("ImageQuality")
-    If pvCheckHResult(IPropertyBag2_Write_Proxy(pPropBag, 1, aBag(0), CSng(lQuality) / 100!)) < 0 Then
-        GoTo QH
+    If lImageQuality <> 0 Then
+        aBag(3) = StrPtr("ImageQuality")
+        If pvCheckHResult(IPropertyBag2_Write_Proxy(pPropBag, 1, aBag(0), CSng(lImageQuality) / 100!)) < 0 Then
+            GoTo QH
+        End If
     End If
     If pvCheckHResult(IWICBitmapFrameEncode_Initialize_Proxy(pFrame, pPropBag)) < 0 Then
         GoTo QH
@@ -1537,7 +1547,7 @@ Private Function pvConvertToJpeg(pOutput As stdole.IUnknown, ByVal lWidth As Lon
         GoTo QH
     End If
     '--- success
-    pvConvertToJpeg = True
+    pvWicConvertImage = True
 QH:
     Exit Function
 EH:
@@ -1545,10 +1555,18 @@ EH:
 End Function
 
 Private Function pvCheckHResult(ByVal hResult As Long) As Long
-    If hResult < 0 Then
+    Dim bInIde          As Boolean
+    
+    Debug.Assert pvSetTrue(bInIde)
+    If bInIde And hResult < 0 Then
         Err.Raise hResult
     End If
     pvCheckHResult = pvCheckHResult
+End Function
+
+Private Function pvSetTrue(bInIde As Boolean) As Boolean
+    bInIde = True
+    pvSetTrue = True
 End Function
 
 '= buffer helpers ========================================================
