@@ -4,30 +4,30 @@ Begin VB.Form Form1
    ClientHeight    =   8232
    ClientLeft      =   108
    ClientTop       =   456
-   ClientWidth     =   4260
+   ClientWidth     =   4500
    LinkTopic       =   "Form1"
    ScaleHeight     =   8232
-   ScaleWidth      =   4260
+   ScaleWidth      =   4500
    StartUpPosition =   3  'Windows Default
    Begin VB.Label labDebug 
       AutoSize        =   -1  'True
       BackStyle       =   0  'Transparent
       BeginProperty Font 
          Name            =   "Consolas"
-         Size            =   7.8
+         Size            =   9
          Charset         =   204
          Weight          =   400
          Underline       =   0   'False
          Italic          =   0   'False
          Strikethrough   =   0   'False
       EndProperty
-      Height          =   180
+      Height          =   216
       Index           =   0
       Left            =   168
       TabIndex        =   1
       Top             =   336
       UseMnemonic     =   0   'False
-      Width           =   84
+      Width           =   96
    End
    Begin VB.Label Label1 
       AutoSize        =   -1  'True
