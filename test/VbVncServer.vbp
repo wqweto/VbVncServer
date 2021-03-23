@@ -21,7 +21,7 @@ RevisionVer=3
 AutoIncrementVer=0
 ServerSupportFiles=0
 VersionCompanyName="Unicontsoft"
-CondComp="VNC_NOZLIB = 0 : ZIP_INFLATE = 1 : ZIP_NOEXTRACT = 1 : USE_DEBUG_LOG = 1"
+CondComp="VNC_NOZLIB = 0 : VNC_NOHISTOGRAMS = 0 : ZIP_INFLATE = 1 : ZIP_NOEXTRACT = 1 : USE_DEBUG_LOG = 1"
 CompilationType=0
 OptimizationType=0
 FavorPentiumPro(tm)=0

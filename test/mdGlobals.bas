@@ -53,7 +53,7 @@ Public Function DesignDumpMemory(ByVal lPtr As Long, ByVal lSize As Long) As Str
     DesignDumpMemory = Join(aResult, vbCrLf)
 End Function
 
-Private Property Get TimerEx() As Double
+Public Property Get TimerEx() As Double
     Dim cFreq           As Currency
     Dim cValue          As Currency
 
