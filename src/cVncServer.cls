@@ -56,6 +56,9 @@ Private Const SM_SWAPBUTTON                 As Long = 23
 Private Const RDW_INVALIDATE                As Long = &H1
 Private Const RDW_ALLCHILDREN               As Long = &H80
 Private Const RDW_ERASENOW                  As Long = &H200
+'--- for IStream_Seek
+Private Const STREAM_SEEK_SET               As Long = 0
+Private Const STREAM_SEEK_CUR               As Long = 1
 '--- for thunks
 Private Const MEM_COMMIT                    As Long = &H1000
 Private Const PAGE_EXECUTE_READWRITE        As Long = &H40
@@ -77,9 +80,7 @@ Private Declare Sub mouse_event Lib "user32" (ByVal dwFlags As Long, ByVal dx As
 Private Declare Function GetSystemMetrics Lib "user32" (ByVal nIndex As Long) As Long
 Private Declare Function RedrawWindow Lib "user32" (ByVal hWnd As Long, lprcUpdate As Any, ByVal hrgnUpdate As Long, ByVal fuRedraw As Long) As Long
 Private Declare Function SHCreateMemStream Lib "shlwapi" Alias "#12" (pInit As Any, ByVal cbInit As Long) As stdole.IUnknown
-Private Declare Function IStream_Size Lib "shlwapi" (ByVal pStream As stdole.IUnknown, uiSize As Any) As Long
-Private Declare Function IStream_Reset Lib "shlwapi" (ByVal pStream As stdole.IUnknown) As Long
-Private Declare Function IStream_Read Lib "shlwapi" (ByVal pStream As stdole.IUnknown, pvBuf As Any, ByVal cbSize As Long) As Long
+Private Declare Function DispCallFunc Lib "oleaut32" (ByVal pvInstance As Long, ByVal oVft As Long, ByVal lCc As Long, ByVal vtReturn As VbVarType, ByVal cActuals As Long, prgVt As Any, prgpVarg As Any, pvargResult As Variant) As Long
 '--- WIC
 Private Declare Function WICCreateImagingFactory_Proxy Lib "windowscodecs" (ByVal SDKVersion As Long, ppIImagingFactory As stdole.IUnknown) As Long
 Private Declare Function IWICImagingFactory_CreateStream_Proxy Lib "windowscodecs" (ByVal pFactory As stdole.IUnknown, ppIWICStream As stdole.IUnknown) As Long
@@ -385,6 +386,7 @@ Private m_pWicFactory           As stdole.IUnknown
 Private m_aWicFormatJpeg()      As Long
 Private m_aWicFormatPng()       As Long
 Private m_aWicFormat32bppPBGRA() As Long
+Private m_pImageStream          As stdole.IUnknown
 
 '=========================================================================
 ' Error handling
@@ -461,6 +463,7 @@ Public Function Accept(oSocket As cAsyncSocket) As Boolean
     m_aWicFormat32bppPBGRA(1) = &H4BFE4E03
     m_aWicFormat32bppPBGRA(2) = &H773D85B1
     m_aWicFormat32bppPBGRA(3) = &H10C98D76
+    Set m_pImageStream = SHCreateMemStream(ByVal 0, 0)
     '--- success
     Accept = True
 QH:
@@ -1147,7 +1150,6 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
     Dim baMask()        As Byte
     Dim bAndFlag        As Boolean
     Dim bXorFlag        As Boolean
-    Dim pImageStream    As stdole.IUnknown
     Dim cTemp           As Currency
     Dim lSize           As Long
     Dim lQualityLevel   As Long
@@ -1324,13 +1326,14 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                 #If ImplUseDebugLog Then
                     sDebugInfo = sDebugInfo & " H=" & Format$(cTemp, "0.00") & " QL=" & lQualityLevel
                 #End If
-                Set pImageStream = Nothing
-                Set pImageStream = SHCreateMemStream(ByVal 0, 0)
-                If Not pvWicConvertImage(pImageStream, m_aWicFormatJpeg, Clamp(lQualityLevel, 1, 100), _
+                If pvCheckHResult(IStream_Seek(m_pImageStream, 0, STREAM_SEEK_SET)) < 0 Then
+                    GoTo QH
+                End If
+                If Not pvWicConvertImage(m_pImageStream, m_aWicFormatJpeg, Clamp(lQualityLevel, 1, 100), _
                         uTile.Data, .Tiles(lIdx).Width, .Tiles(lIdx).Height, m_aWicFormat32bppPBGRA) Then
                     GoTo QH
                 End If
-                If pvCheckHResult(IStream_Size(pImageStream, cTemp)) < 0 Then
+                If pvCheckHResult(IStream_Seek(m_pImageStream, 0, STREAM_SEEK_CUR, cTemp)) < 0 Then
                     GoTo QH
                 End If
                 lSize = cTemp * 10000
@@ -1342,7 +1345,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                 '--- compression control: &H90 = no reset, JpegCompression
                 pvBufferWriteLong uOutput, &H90
                 pvBufferWriteCompactLong uOutput, lSize
-                pvBufferWriteStream uOutput, pImageStream
+                pvBufferWriteStream uOutput, m_pImageStream
             Else
                 #If ImplZlib Then
                     If m_uClientEncodings.HasTight And m_uClientEncodings.CompressionLevel > 0 And lBytesPerPixel = 4 Then
@@ -1595,6 +1598,43 @@ Private Function pvSetTrue(bInIde As Boolean) As Boolean
     pvSetTrue = True
 End Function
 
+Private Function IStream_Read(pstm As stdole.IUnknown, ByVal lPtr As Long, ByVal lSize As Long, Optional BytesRead As Long) As Long
+    If Not pstm Is Nothing Then
+        IStream_Read = DispCallByVtbl(pstm, 3, lPtr, lSize, VarPtr(BytesRead))
+    End If
+End Function
+
+Private Function IStream_Seek(pstm As stdole.IUnknown, ByVal cMove As Currency, ByVal dwOrigin As Long, Optional NewPosition As Currency) As Long
+    If Not pstm Is Nothing Then
+        IStream_Seek = DispCallByVtbl(pstm, 5, cMove, dwOrigin, VarPtr(NewPosition))
+    End If
+End Function
+
+Public Function IStream_SetSize(pstm As stdole.IUnknown, ByVal cNewSize As Currency) As Long
+    If Not pstm Is Nothing Then
+        IStream_SetSize = DispCallByVtbl(pstm, 6, cNewSize)
+    End If
+End Function
+
+Private Function DispCallByVtbl(pUnk As stdole.IUnknown, ByVal lIndex As Long, ParamArray A() As Variant) As Variant
+    Const CC_STDCALL    As Long = 4
+    Dim lIdx            As Long
+    Dim vParam()        As Variant
+    Dim vType(0 To 63)  As Integer
+    Dim vPtr(0 To 63)   As Long
+    Dim hResult         As Long
+    
+    vParam = A
+    For lIdx = 0 To UBound(vParam)
+        vType(lIdx) = VarType(vParam(lIdx))
+        vPtr(lIdx) = VarPtr(vParam(lIdx))
+    Next
+    hResult = DispCallFunc(ObjPtr(pUnk), lIndex * 4, CC_STDCALL, vbLong, lIdx, vType(0), vPtr(0), DispCallByVtbl)
+    If hResult < 0 Then
+        Err.Raise hResult, "DispCallFunc"
+    End If
+End Function
+
 '= buffer helpers ========================================================
 
 Private Sub pvBufferWriteArray(uOutput As UcsBuffer, baSrc() As Byte)
@@ -1695,16 +1735,16 @@ Private Sub pvBufferWriteStream(uOutput As UcsBuffer, pStream As stdole.IUnknown
     Dim cTemp           As Currency
     Dim lSize           As Long
     
-    If pvCheckHResult(IStream_Size(pStream, cTemp)) < 0 Then
+    If pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_CUR, cTemp)) < 0 Then
         GoTo QH
     End If
     lSize = cTemp * 10000
     If lSize > 0 Then
         pvBufferWriteBlob uOutput, 0, lSize
-        If pvCheckHResult(IStream_Reset(pStream)) < 0 Then
+        If pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_SET)) < 0 Then
             GoTo QH
         End If
-        If pvCheckHResult(IStream_Read(pStream, uOutput.Data(uOutput.Size - lSize), lSize)) < 0 Then
+        If pvCheckHResult(IStream_Read(pStream, VarPtr(uOutput.Data(uOutput.Size - lSize)), lSize)) < 0 Then
             GoTo QH
         End If
     End If
