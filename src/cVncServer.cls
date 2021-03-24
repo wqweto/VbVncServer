@@ -59,6 +59,17 @@ Private Const RDW_ERASENOW                  As Long = &H200
 '--- for IStream_Seek
 Private Const STREAM_SEEK_SET               As Long = 0
 Private Const STREAM_SEEK_CUR               As Long = 1
+'--- for CryptAcquireContext
+Private Const PROV_RSA_FULL                 As Long = 1
+Private Const CRYPT_VERIFYCONTEXT           As Long = &HF0000000
+'--- for CryptImportKey
+Private Const PLAINTEXTKEYBLOB              As Long = 8
+Private Const CUR_BLOB_VERSION              As Long = 2
+Private Const CALG_DES                      As Long = &H6601
+Private Const CRYPT_EXPORTABLE              As Long = &H1
+'--- for CryptSetKeyParam
+Private Const KP_MODE                       As Long = 4
+Private Const CRYPT_MODE_ECB                As Long = 2
 '--- for thunks
 Private Const MEM_COMMIT                    As Long = &H1000
 Private Const PAGE_EXECUTE_READWRITE        As Long = &H40
@@ -81,6 +92,14 @@ Private Declare Function GetSystemMetrics Lib "user32" (ByVal nIndex As Long) As
 Private Declare Function RedrawWindow Lib "user32" (ByVal hWnd As Long, lprcUpdate As Any, ByVal hrgnUpdate As Long, ByVal fuRedraw As Long) As Long
 Private Declare Function SHCreateMemStream Lib "shlwapi" Alias "#12" (pInit As Any, ByVal cbInit As Long) As stdole.IUnknown
 Private Declare Function DispCallFunc Lib "oleaut32" (ByVal pvInstance As Long, ByVal oVft As Long, ByVal lCc As Long, ByVal vtReturn As VbVarType, ByVal cActuals As Long, prgVt As Any, prgpVarg As Any, pvargResult As Variant) As Long
+'--- advapi32
+Private Declare Function CryptAcquireContext Lib "advapi32" Alias "CryptAcquireContextW" (phProv As Long, ByVal pszContainer As Long, ByVal pszProvider As Long, ByVal dwProvType As Long, ByVal dwFlags As Long) As Long
+Private Declare Function CryptReleaseContext Lib "advapi32" (ByVal hProv As Long, ByVal dwFlags As Long) As Long
+Private Declare Function CryptEncrypt Lib "advapi32" (ByVal hKey As Long, ByVal hHash As Long, ByVal Final As Long, ByVal dwFlags As Long, pbData As Any, pdwDataLen As Long, dwBufLen As Long) As Long
+Private Declare Function CryptImportKey Lib "advapi32" (ByVal hProv As Long, pbData As Any, ByVal dwDataLen As Long, ByVal hPubKey As Long, ByVal dwFlags As Long, phKey As Long) As Long
+Private Declare Function CryptDestroyKey Lib "advapi32" (ByVal hKey As Long) As Long
+Private Declare Function CryptSetKeyParam Lib "advapi32" (ByVal hKey As Long, ByVal dwParam As Long, pbData As Any, ByVal dwFlags As Long) As Long
+Private Declare Function RtlGenRandom Lib "advapi32" Alias "SystemFunction036" (RandomBuffer As Any, ByVal RandomBufferLength As Long) As Long
 '--- WIC
 Private Declare Function WICCreateImagingFactory_Proxy Lib "windowscodecs" (ByVal SDKVersion As Long, ppIImagingFactory As stdole.IUnknown) As Long
 Private Declare Function IWICImagingFactory_CreateStream_Proxy Lib "windowscodecs" (ByVal pFactory As stdole.IUnknown, ppIWICStream As stdole.IUnknown) As Long
@@ -108,6 +127,16 @@ Private Declare Function GetCurrentProcessId Lib "kernel32" () As Long
 Private Declare Function GetEnvironmentVariable Lib "kernel32" Alias "GetEnvironmentVariableA" (ByVal lpName As String, ByVal lpBuffer As String, ByVal nSize As Long) As Long
 Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnvironmentVariableA" (ByVal lpName As String, ByVal lpValue As String) As Long
 
+Private Type BLOBHEADER
+    bType               As Byte
+    bVersion            As Byte
+    reserved            As Integer
+    aiKeyAlg            As Long
+    cbKeySize           As Long
+    Buffer(0 To 7)      As Byte
+End Type
+Private Const sizeof_BLOBHEADER As Long = 12
+
 '=========================================================================
 ' Protocol enums and types
 '=========================================================================
@@ -116,6 +145,7 @@ Private Enum UcsRfbProtocolStateEnum
     ucsStaNone
     ucsStaExpectProtocolVersion
     ucsStaExpectSecurityHandshake
+    ucsStaExpectSecurityVncResponse
     ucsStaExpectClientInit
     ucsStaExpectClientMessage
 End Enum
@@ -359,16 +389,18 @@ Private Const STR_APP_NAME          As String = "VbVncServer"
 Private Const STR_PROTOCOL_VERSION  As String = "RFB 003.008" & vbLf
 Private Const STR_TIGHT_SERVER_MSGS As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
 Private Const STR_TIGHT_CLIENT_MSGS As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
-Private Const STR_TIGHT_ENCODINGS   As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-32;TGHT;JPEGQLVL|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR"
+Private Const STR_TIGHT_ENCODINGS   As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-32;TGHT;JPEGQLVL|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR|-256;TGHT;COMPRLVL"
 Private Const TILE_SIZE             As Long = 256
 
+Private m_cClients              As Object ' Collection
+'--- client
 Private m_eState                As UcsRfbProtocolStateEnum
 Private WithEvents m_oSocket    As cAsyncSocket
 Attribute m_oSocket.VB_VarHelpID = -1
 Private m_uRecvBuffer           As UcsBuffer
 Private m_uSendBuffer           As UcsBuffer
-Private m_cClients              As Object ' Collection
-Private m_eClientSecurityType   As UcsRfbSecurityTypeEnum
+Private m_eSecurityType         As UcsRfbSecurityTypeEnum
+Private m_baSecurityChallenge() As Byte
 Private m_uClientPixelFormat    As UcsClientSetPixelFormatType
 Private m_uClientEncodings      As UcsClientSetEncodingsType
 Private m_uClientFramebufferUpdate As UcsClientFramebufferUpdateRequestType
@@ -438,8 +470,11 @@ End Function
 Public Function Accept(oSocket As cAsyncSocket) As Boolean
     Const WINCODEC_SDK_VERSION1   As Long = &H236&
     Const WINCODEC_SDK_VERSION2   As Long = &H237&
+    Const IPPROTO_TCP             As Long = 6
+    Const TCP_NODELAY             As Long = 1
     
     Set m_oSocket = oSocket
+    m_oSocket.SockOpt(TCP_NODELAY, IPPROTO_TCP) = 1 '--- disable Nagle algorithm
     If Not pvSendProtocolVersion(m_uSendBuffer, m_oSocket) Then
         GoTo QH
     End If
@@ -477,14 +512,24 @@ End Function
 
 Private Function pvSendSecurityTypes(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     pvBufferWriteLong uOutput, 2
-    pvBufferWriteLong uOutput, ucsSecNone
+    pvBufferWriteLong uOutput, ucsSecVnc
     pvBufferWriteLong uOutput, ucsSecTight
     '--- success (or failure)
     pvSendSecurityTypes = pvBufferSendAsync(uOutput, oSocket)
 End Function
 
-Private Function pvSendSecurityResult(ByVal lResult As Long, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+Private Function pvSendSecurityChallenge(baChallenge() As Byte, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+    pvBufferWriteArray uOutput, baChallenge
+    '--- success (or failure)
+    pvSendSecurityChallenge = pvBufferSendAsync(uOutput, oSocket)
+End Function
+
+Private Function pvSendSecurityResult(ByVal lResult As Long, sReason As String, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     pvBufferWriteLong uOutput, lResult, Size:=4
+    If LenB(sReason) <> 0 Then
+        pvBufferWriteLong uOutput, Len(sReason), Size:=4
+        pvBufferWriteArray uOutput, StrConv(sReason, vbFromUnicode)
+    End If
     '--- success (or failure)
     pvSendSecurityResult = pvBufferSendAsync(uOutput, oSocket)
 End Function
@@ -527,7 +572,7 @@ Private Function pvSendServerInit(uCtx As UcsCaptureContext, sName As String, uO
     End With
     pvBufferWriteBlob uOutput, VarPtr(uInit), UcsServerInitSize
     pvBufferWriteArray uOutput, StrConv(sName, vbFromUnicode)
-    If m_eClientSecurityType = ucsSecTight Then
+    If m_eSecurityType = ucsSecTight Then
         pvInitTightCapabilities uServerMsgs, STR_TIGHT_SERVER_MSGS
         pvInitTightCapabilities uClientMsgs, STR_TIGHT_CLIENT_MSGS
         pvInitTightCapabilities uEncodings, STR_TIGHT_ENCODINGS
@@ -561,17 +606,19 @@ End Function
 
 Private Sub pvHandleReceive()
     Const FUNC_NAME     As String = "pvHandleReceive"
+    Const DEF_PASSWORD  As String = "0000"
     Const SecurityResultOk As Long = 0
+    Const SecurityResultFailed As Long = 1
     Dim baBuffer()      As Byte
     Dim vElem           As Variant
     
     On Error GoTo EH
     Do
         If Not m_oSocket.ReceiveArray(baBuffer) Then
-            GoTo QH
+            Exit Do
         End If
         If UBound(baBuffer) < 0 Then
-            GoTo QH
+            Exit Do
         End If
         pvBufferWriteArray m_uRecvBuffer, baBuffer
         With m_uRecvBuffer
@@ -588,37 +635,54 @@ Private Sub pvHandleReceive()
                     '--- ignore client protocol version
                     .Pos = .Pos + Len(STR_PROTOCOL_VERSION)
                     If Not pvSendSecurityTypes(m_uSendBuffer, m_oSocket) Then
-                        m_eState = ucsStaNone
                         GoTo QH
                     End If
                     m_eState = ucsStaExpectSecurityHandshake
                 Case ucsStaExpectSecurityHandshake
-                    m_eClientSecurityType = .Data(.Pos)
+                    m_eSecurityType = .Data(.Pos)
                     .Pos = .Pos + 1
-                    Select Case m_eClientSecurityType
+                    Select Case m_eSecurityType
                     Case ucsSecNone
-                        If Not pvSendSecurityResult(SecurityResultOk, m_uSendBuffer, m_oSocket) Then
-                            m_eState = ucsStaNone
+                        If Not pvSendSecurityResult(SecurityResultOk, vbNullString, m_uSendBuffer, m_oSocket) Then
                             GoTo QH
                         End If
                         m_eState = ucsStaExpectClientInit
-                    Case ucsSecTight
-                        If Not pvSendTightSecurityType(m_uSendBuffer, m_oSocket) Then
-                            m_eState = ucsStaNone
+                    Case ucsSecVnc
+                        m_baSecurityChallenge = pvCryptoRandomBytes(16)
+                        If Not pvSendSecurityChallenge(m_baSecurityChallenge, m_uSendBuffer, m_oSocket) Then
                             GoTo QH
                         End If
-                        If Not pvSendSecurityResult(SecurityResultOk, m_uSendBuffer, m_oSocket) Then
-                            m_eState = ucsStaNone
+                        If Not pvCryptoDesEncrypt(m_baSecurityChallenge, StrConv(DEF_PASSWORD, vbFromUnicode)) Then
+                            GoTo QH
+                        End If
+                        m_eState = ucsStaExpectSecurityVncResponse
+                    Case ucsSecTight
+                        If Not pvSendTightSecurityType(m_uSendBuffer, m_oSocket) Then
+                            GoTo QH
+                        End If
+                        If Not pvSendSecurityResult(SecurityResultOk, vbNullString, m_uSendBuffer, m_oSocket) Then
                             GoTo QH
                         End If
                         m_eState = ucsStaExpectClientInit
                     Case Else
                         #If ImplUseDebugLog Then
-                            DebugLog MODULE_NAME, FUNC_NAME, "Unknown security type (" & .Data(.Pos) & ")"
+                            DebugLog MODULE_NAME, FUNC_NAME, "Unknown security type (" & m_eSecurityType & ")"
                         #End If
-                        m_eState = ucsStaNone
                         GoTo QH
                     End Select
+                Case ucsStaExpectSecurityVncResponse
+                    If .Size - .Pos < 16 Then
+                        Exit Do
+                    End If
+                    If Not pvArrayEqual(.Data, .Pos, 16, m_baSecurityChallenge) Then
+                        pvSendSecurityResult SecurityResultFailed, "Wrong password", m_uSendBuffer, m_oSocket
+                        GoTo QH
+                    End If
+                    .Pos = .Pos + 16
+                    If Not pvSendSecurityResult(SecurityResultOk, vbNullString, m_uSendBuffer, m_oSocket) Then
+                        GoTo QH
+                    End If
+                    m_eState = ucsStaExpectClientInit
                 Case ucsStaExpectClientInit
                     '--- ignore shared flag
                     .Pos = .Pos + 1
@@ -627,7 +691,6 @@ Private Sub pvHandleReceive()
                         GoTo QH
                     End If
                     If Not pvSendServerInit(m_uCaptureCtx, STR_APP_NAME, m_uSendBuffer, m_oSocket) Then
-                        m_eState = ucsStaNone
                         GoTo QH
                     End If
                     m_eState = ucsStaExpectClientMessage
@@ -644,7 +707,9 @@ Private Sub pvHandleReceive()
             End If
         End With
     Loop
+    Exit Sub
 QH:
+    m_eState = ucsStaNone
     Exit Sub
 EH:
     PrintError FUNC_NAME
@@ -1818,6 +1883,74 @@ Private Property Get pvArraySize(baArray() As Byte) As Long
         pvArraySize = UBound(baArray) + 1
     End If
 End Property
+
+Private Function pvArrayEqual(baFirst() As Byte, ByVal lFirstPos As Long, ByVal lSize As Long, baSecond() As Byte, Optional ByVal lSecondPos As Long) As Boolean
+    Dim lIdx            As Long
+    Dim lResult         As Long
+    
+    For lIdx = 0 To lSize - 1
+        lResult = baFirst(lFirstPos + lIdx) Xor baSecond(lSecondPos + lIdx) Or lResult
+    Next
+    pvArrayEqual = (lResult = 0)
+End Function
+
+Private Function pvCryptoRandomBytes(ByVal lSize As Long) As Byte()
+    Const FUNC_NAME     As String = "pvCryptoRandomBytes"
+    Dim baRetVal()      As Byte
+    
+    pvArrayAllocate baRetVal, lSize, FUNC_NAME & ".baRetVal"
+    Call RtlGenRandom(baRetVal(0), lSize)
+    pvCryptoRandomBytes = baRetVal
+End Function
+
+Private Function pvCryptoDesEncrypt(baInput() As Byte, baKey() As Byte) As Boolean
+    Dim hProv           As Long
+    Dim uBlob           As BLOBHEADER
+    Dim lIdx            As Long
+    Dim hKey            As Long
+    Dim lSize           As Long
+    
+    If CryptAcquireContext(hProv, 0, 0, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT) = 0 Then
+        GoTo QH
+    End If
+    uBlob.bType = PLAINTEXTKEYBLOB
+    uBlob.bVersion = CUR_BLOB_VERSION
+    uBlob.aiKeyAlg = CALG_DES
+    uBlob.cbKeySize = UBound(uBlob.Buffer) + 1
+    For lIdx = 0 To Clamp(UBound(baKey), , UBound(uBlob.Buffer))
+        uBlob.Buffer(lIdx) = pvReverseBits(baKey(lIdx))
+    Next
+    If CryptImportKey(hProv, uBlob, sizeof_BLOBHEADER + uBlob.cbKeySize, 0, CRYPT_EXPORTABLE, hKey) = 0 Then
+        GoTo QH
+    End If
+    If CryptSetKeyParam(hKey, KP_MODE, CRYPT_MODE_ECB, 0) = 0 Then
+        GoTo QH
+    End If
+    lSize = UBound(baInput) + 1
+    If CryptEncrypt(hKey, 0, 0, 0, baInput(0), lSize, lSize) = 0 Then
+        GoTo QH
+    End If
+    '--- success
+    pvCryptoDesEncrypt = True
+QH:
+    If hKey <> 0 Then
+        Call CryptDestroyKey(hKey)
+    End If
+    If hProv <> 0 Then
+        Call CryptReleaseContext(hProv, 0)
+    End If
+End Function
+
+Private Function pvReverseBits(ByVal lByte As Long) As Byte
+    Const POW2_4 As Long = 2 ^ 4
+    Const POW2_2 As Long = 2 ^ 2
+    Const POW2_1 As Long = 2 ^ 1
+    
+    lByte = ((lByte And &HF0) \ POW2_4) Or ((lByte And &HF) * POW2_4) And &HFF
+    lByte = ((lByte And &HCC) \ POW2_2) Or ((lByte And &H33) * POW2_2) And &HFF
+    lByte = ((lByte And &HAA) \ POW2_1) Or ((lByte And &H55) * POW2_1) And &HFF
+    pvReverseBits = lByte
+End Function
 
 '= common helpers ========================================================
 
