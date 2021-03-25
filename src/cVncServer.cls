@@ -92,6 +92,7 @@ Private Declare Function GetSystemMetrics Lib "user32" (ByVal nIndex As Long) As
 Private Declare Function RedrawWindow Lib "user32" (ByVal hWnd As Long, lprcUpdate As Any, ByVal hrgnUpdate As Long, ByVal fuRedraw As Long) As Long
 Private Declare Function SHCreateMemStream Lib "shlwapi" Alias "#12" (pInit As Any, ByVal cbInit As Long) As stdole.IUnknown
 Private Declare Function DispCallFunc Lib "oleaut32" (ByVal pvInstance As Long, ByVal oVft As Long, ByVal lCc As Long, ByVal vtReturn As VbVarType, ByVal cActuals As Long, prgVt As Any, prgpVarg As Any, pvargResult As Variant) As Long
+Private Declare Function vbaObjSetAddref Lib "msvbvm60" Alias "__vbaObjSetAddref" (oDest As Any, ByVal lSrcPtr As Long) As Long
 '--- advapi32
 Private Declare Function CryptAcquireContext Lib "advapi32" Alias "CryptAcquireContextW" (phProv As Long, ByVal pszContainer As Long, ByVal pszProvider As Long, ByVal dwProvType As Long, ByVal dwFlags As Long) As Long
 Private Declare Function CryptReleaseContext Lib "advapi32" (ByVal hProv As Long, ByVal dwFlags As Long) As Long
@@ -145,6 +146,7 @@ Private Enum UcsRfbProtocolStateEnum
     ucsStaNone
     ucsStaExpectProtocolVersion
     ucsStaExpectSecurityHandshake
+    ucsStaExpectSecurityTightResponse
     ucsStaExpectSecurityVncResponse
     ucsStaExpectClientInit
     ucsStaExpectClientMessage
@@ -390,10 +392,13 @@ Private Const STR_PROTOCOL_VERSION  As String = "RFB 003.008" & vbLf
 Private Const STR_TIGHT_SERVER_MSGS As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
 Private Const STR_TIGHT_CLIENT_MSGS As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
 Private Const STR_TIGHT_ENCODINGS   As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-32;TGHT;JPEGQLVL|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR|-256;TGHT;COMPRLVL"
+Private Const STR_TIGHT_AUTH_TYPES  As String = "2;STDV;VNCAUTH_"
 Private Const TILE_SIZE             As Long = 256
 
-Private m_cClients              As Object ' Collection
+Private m_cConnections          As Collection
+Private m_sPassword             As String
 '--- client
+Private m_lParentWeakRef        As Long
 Private m_eState                As UcsRfbProtocolStateEnum
 Private WithEvents m_oSocket    As cAsyncSocket
 Attribute m_oSocket.VB_VarHelpID = -1
@@ -450,13 +455,19 @@ Private Property Get pvAddressOfTimerProc() As cVncServer
     Set pvAddressOfTimerProc = InitAddressOfMethod(Me, 0)
 End Property
 
+Private Property Get pvParent() As cVncServer
+    Call vbaObjSetAddref(pvParent, m_lParentWeakRef)
+End Property
+
 '=========================================================================
 ' Methods
 '=========================================================================
 
-Public Function Init(Optional sAddress As String, Optional ByVal lPort As Long = 5900) As Boolean
+Public Function Init(Optional ListenAddress As String, Optional ByVal ListenPort As Long = 5900, Optional Password As String) As Boolean
+    Set m_cConnections = New Collection
+    m_sPassword = Password
     Set m_oSocket = New cAsyncSocket
-    If Not m_oSocket.Create(SocketAddress:=sAddress, SocketPort:=lPort) Then
+    If Not m_oSocket.Create(SocketAddress:=ListenAddress, SocketPort:=ListenPort) Then
         GoTo QH
     End If
     If Not m_oSocket.Listen() Then
@@ -467,13 +478,15 @@ Public Function Init(Optional sAddress As String, Optional ByVal lPort As Long =
 QH:
 End Function
 
-Public Function Accept(oSocket As cAsyncSocket) As Boolean
+Friend Function frNewConnection(oSocket As cAsyncSocket, sPassword As String, ByVal lParentWeakRef As Long) As Boolean
     Const WINCODEC_SDK_VERSION1   As Long = &H236&
     Const WINCODEC_SDK_VERSION2   As Long = &H237&
     Const IPPROTO_TCP             As Long = 6
     Const TCP_NODELAY             As Long = 1
     
     Set m_oSocket = oSocket
+    m_lParentWeakRef = lParentWeakRef
+    m_sPassword = sPassword
     m_oSocket.SockOpt(TCP_NODELAY, IPPROTO_TCP) = 1 '--- disable Nagle algorithm
     If Not pvSendProtocolVersion(m_uSendBuffer, m_oSocket) Then
         GoTo QH
@@ -500,9 +513,15 @@ Public Function Accept(oSocket As cAsyncSocket) As Boolean
     m_aWicFormat32bppPBGRA(3) = &H10C98D76
     Set m_pImageStream = SHCreateMemStream(ByVal 0, 0)
     '--- success
-    Accept = True
+    frNewConnection = True
 QH:
 End Function
+
+Friend Sub frCloseConnection(oConn As cVncServer)
+    On Error GoTo EH
+    m_cConnections.Remove "#" & ObjPtr(oConn)
+EH:
+End Sub
 
 Private Function pvSendProtocolVersion(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     pvBufferWriteArray uOutput, oSocket.ToTextArray(STR_PROTOCOL_VERSION)
@@ -512,7 +531,7 @@ End Function
 
 Private Function pvSendSecurityTypes(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     pvBufferWriteLong uOutput, 2
-    pvBufferWriteLong uOutput, ucsSecVnc
+    pvBufferWriteLong uOutput, IIf(LenB(m_sPassword) <> 0, ucsSecVnc, ucsSecNone)
     pvBufferWriteLong uOutput, ucsSecTight
     '--- success (or failure)
     pvSendSecurityTypes = pvBufferSendAsync(uOutput, oSocket)
@@ -537,9 +556,16 @@ End Function
 Private Function pvSendTightSecurityType(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     Const NumberOfTunnels As Long = 0
     Const NumberOfAuths As Long = 0
+    Dim uAuthTypes()    As UcsTightCapabilityType
     
     pvBufferWriteLong uOutput, NumberOfTunnels, Size:=4
-    pvBufferWriteLong uOutput, NumberOfAuths, Size:=4
+    If LenB(m_sPassword) = 0 Then
+        pvBufferWriteLong uOutput, NumberOfAuths, Size:=4
+    Else
+        pvInitTightCapabilities uAuthTypes, STR_TIGHT_AUTH_TYPES
+        pvBufferWriteLong uOutput, UBound(uAuthTypes) + 1, Size:=4
+        pvBufferWriteBlob uOutput, VarPtr(uAuthTypes(0)), (UBound(uAuthTypes) + 1) * UcsTightCapabilitySize
+    End If
     '--- success (or failure)
     pvSendTightSecurityType = pvBufferSendAsync(uOutput, oSocket)
 End Function
@@ -606,11 +632,12 @@ End Function
 
 Private Sub pvHandleReceive()
     Const FUNC_NAME     As String = "pvHandleReceive"
-    Const DEF_PASSWORD  As String = "0000"
     Const SecurityResultOk As Long = 0
     Const SecurityResultFailed As Long = 1
     Dim baBuffer()      As Byte
     Dim vElem           As Variant
+    Dim baPassword()    As Byte
+    Dim eSecurityType   As UcsRfbSecurityTypeEnum
     
     On Error GoTo EH
     Do
@@ -641,8 +668,14 @@ Private Sub pvHandleReceive()
                 Case ucsStaExpectSecurityHandshake
                     m_eSecurityType = .Data(.Pos)
                     .Pos = .Pos + 1
-                    Select Case m_eSecurityType
+                    eSecurityType = m_eSecurityType
+DoAuth:
+                    Select Case eSecurityType
                     Case ucsSecNone
+                        If LenB(m_sPassword) <> 0 Then
+                            pvSendSecurityResult SecurityResultFailed, "Password required", m_uSendBuffer, m_oSocket
+                            GoTo QH
+                        End If
                         If Not pvSendSecurityResult(SecurityResultOk, vbNullString, m_uSendBuffer, m_oSocket) Then
                             GoTo QH
                         End If
@@ -652,29 +685,42 @@ Private Sub pvHandleReceive()
                         If Not pvSendSecurityChallenge(m_baSecurityChallenge, m_uSendBuffer, m_oSocket) Then
                             GoTo QH
                         End If
-                        If Not pvCryptoDesEncrypt(m_baSecurityChallenge, StrConv(DEF_PASSWORD, vbFromUnicode)) Then
-                            GoTo QH
-                        End If
                         m_eState = ucsStaExpectSecurityVncResponse
                     Case ucsSecTight
                         If Not pvSendTightSecurityType(m_uSendBuffer, m_oSocket) Then
                             GoTo QH
                         End If
-                        If Not pvSendSecurityResult(SecurityResultOk, vbNullString, m_uSendBuffer, m_oSocket) Then
-                            GoTo QH
+                        If LenB(m_sPassword) = 0 Then
+                            If Not pvSendSecurityResult(SecurityResultOk, vbNullString, m_uSendBuffer, m_oSocket) Then
+                                GoTo QH
+                            End If
+                            m_eState = ucsStaExpectClientInit
+                        Else
+                            m_eState = ucsStaExpectSecurityTightResponse
                         End If
-                        m_eState = ucsStaExpectClientInit
                     Case Else
                         #If ImplUseDebugLog Then
-                            DebugLog MODULE_NAME, FUNC_NAME, "Unknown security type (" & m_eSecurityType & ")"
+                            DebugLog MODULE_NAME, FUNC_NAME, "Unknown security type (" & eSecurityType & ")"
                         #End If
                         GoTo QH
                     End Select
+                Case ucsStaExpectSecurityTightResponse
+                    If .Size - .Pos < 4 Then
+                        Exit Do
+                    End If
+                    Call CopyMemory(eSecurityType, .Data(.Pos), 4)
+                    .Pos = .Pos + 4
+                    eSecurityType = pvNetworkLong(eSecurityType)
+                    GoTo DoAuth
                 Case ucsStaExpectSecurityVncResponse
                     If .Size - .Pos < 16 Then
                         Exit Do
                     End If
-                    If Not pvArrayEqual(.Data, .Pos, 16, m_baSecurityChallenge) Then
+                    baPassword = m_baSecurityChallenge
+                    If Not pvCryptoDesEncrypt(baPassword, StrConv(m_sPassword, vbFromUnicode)) Then
+                        GoTo QH
+                    End If
+                    If Not pvArrayEqual(.Data, .Pos, 16, baPassword) Then
                         pvSendSecurityResult SecurityResultFailed, "Wrong password", m_uSendBuffer, m_oSocket
                         GoTo QH
                     End If
@@ -1235,9 +1281,11 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
             pvCapturePrepareLut baGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
             pvCapturePrepareLut baBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
         Else
-            pvCapturePrepareLut baRedLut, 7, 2 ^ 5
-            pvCapturePrepareLut baGreenLut, 7, 2 ^ 2
-            pvCapturePrepareLut baBlueLut, 3, 2 ^ 0
+            #If ImplHistograms Then
+                pvCapturePrepareLut baRedLut, 7, 2 ^ 5
+                pvCapturePrepareLut baGreenLut, 7, 2 ^ 2
+                pvCapturePrepareLut baBlueLut, 3, 2 ^ 0
+            #End If
         End If
         pvArrayAllocate baRow, uCtx.Width * 4, FUNC_NAME & ".baRow"
         '--- send pointer
@@ -1675,12 +1723,6 @@ Private Function IStream_Seek(pstm As stdole.IUnknown, ByVal cMove As Currency, 
     End If
 End Function
 
-Public Function IStream_SetSize(pstm As stdole.IUnknown, ByVal cNewSize As Currency) As Long
-    If Not pstm Is Nothing Then
-        IStream_SetSize = DispCallByVtbl(pstm, 6, cNewSize)
-    End If
-End Function
-
 Private Function DispCallByVtbl(pUnk As stdole.IUnknown, ByVal lIndex As Long, ParamArray A() As Variant) As Variant
     Const CC_STDCALL    As Long = 4
     Dim lIdx            As Long
@@ -2002,13 +2044,16 @@ End Function
 Private Sub m_oSocket_OnAccept()
     Const FUNC_NAME     As String = "m_oSocket_OnAccept"
     Dim oSocket         As cAsyncSocket
+    Dim oConn           As cVncServer
     
     On Error GoTo EH
     If Not m_oSocket.Accept(oSocket) Then
         GoTo QH
     End If
-    Set m_cClients = New cVncServer
-    m_cClients.Accept oSocket
+    Set oConn = New cVncServer
+    If oConn.frNewConnection(oSocket, m_sPassword, ObjPtr(Me)) Then
+        m_cConnections.Add oConn, "#" & ObjPtr(oConn)
+    End If
 QH:
     Exit Sub
 EH:
@@ -2035,7 +2080,14 @@ EH:
 End Sub
 
 Private Sub m_oSocket_OnClose()
+    Const FUNC_NAME     As String = "m_oSocket_OnClose"
+    
+    On Error GoTo EH
     Set m_pTimer = Nothing
+    pvParent.frCloseConnection Me
+    Exit Sub
+EH:
+    PrintError FUNC_NAME
 End Sub
 
 Private Sub m_oSocket_OnError(ByVal ErrorCode As Long, ByVal EventMask As UcsAsyncSocketEventMaskEnum)
