@@ -70,6 +70,21 @@ Private Const CRYPT_EXPORTABLE              As Long = &H1
 '--- for CryptSetKeyParam
 Private Const KP_MODE                       As Long = 4
 Private Const CRYPT_MODE_ECB                As Long = 2
+'--- for GetDriveType
+Private Const DRIVE_REMOVABLE               As Long = 2
+Private Const DRIVE_FIXED                   As Long = 3
+Private Const DRIVE_REMOTE                  As Long = 4
+Private Const DRIVE_CDROM                   As Long = 5
+'--- for SHGetFolderPath
+Private Const CSIDL_DESKTOP                 As Long = &H0
+Private Const CSIDL_PERSONAL                As Long = &H5
+Private Const CSIDL_NETHOOD                 As Long = &H13
+Private Const CSIDL_FLAG_CREATE             As Long = &H8000&
+'--- for FindFirstFile
+Private Const MAX_PATH                      As Long = 260
+Private Const INVALID_HANDLE_VALUE          As Long = -1
+'--- for SetErrorMode
+Private Const SEM_FAILCRITICALERRORS        As Long = &H1
 '--- for thunks
 Private Const MEM_COMMIT                    As Long = &H1000
 Private Const PAGE_EXECUTE_READWRITE        As Long = &H40
@@ -93,6 +108,13 @@ Private Declare Function RedrawWindow Lib "user32" (ByVal hWnd As Long, lprcUpda
 Private Declare Function SHCreateMemStream Lib "shlwapi" Alias "#12" (pInit As Any, ByVal cbInit As Long) As stdole.IUnknown
 Private Declare Function DispCallFunc Lib "oleaut32" (ByVal pvInstance As Long, ByVal oVft As Long, ByVal lCc As Long, ByVal vtReturn As VbVarType, ByVal cActuals As Long, prgVt As Any, prgpVarg As Any, pvargResult As Variant) As Long
 Private Declare Function vbaObjSetAddref Lib "msvbvm60" Alias "__vbaObjSetAddref" (oDest As Any, ByVal lSrcPtr As Long) As Long
+Private Declare Function GetLogicalDriveStrings Lib "kernel32" Alias "GetLogicalDriveStringsA" (ByVal nBufferLength As Long, lpBuffer As Any) As Long
+Private Declare Function GetDriveType Lib "kernel32" Alias "GetDriveTypeA" (nDrive As Any) As Long
+Private Declare Function SHGetFolderPath Lib "shfolder" Alias "SHGetFolderPathA" (ByVal hWnd As Long, ByVal csidl As Long, ByVal hToken As Long, ByVal dwFlags As Long, ByVal szPath As String) As Long
+Private Declare Function FindFirstFile Lib "kernel32" Alias "FindFirstFileW" (ByVal lpFileName As Long, ByVal lpFindFileData As Long) As Long
+Private Declare Function FindNextFile Lib "kernel32" Alias "FindNextFileW" (ByVal hFindFile As Long, ByVal lpFindFileData As Long) As Long
+Private Declare Function FindClose Lib "kernel32" (ByVal hFindFile As Long) As Long
+Private Declare Function SetErrorMode Lib "kernel32" (ByVal wMode As Long) As Long
 '--- advapi32
 Private Declare Function CryptAcquireContext Lib "advapi32" Alias "CryptAcquireContextW" (phProv As Long, ByVal pszContainer As Long, ByVal pszProvider As Long, ByVal dwProvType As Long, ByVal dwFlags As Long) As Long
 Private Declare Function CryptReleaseContext Lib "advapi32" (ByVal hProv As Long, ByVal dwFlags As Long) As Long
@@ -138,83 +160,101 @@ Private Type BLOBHEADER
 End Type
 Private Const sizeof_BLOBHEADER As Long = 12
 
+Private Type WIN32_FIND_DATA
+    dwFileAttributes    As Long
+    ftCreationTime      As Currency
+    ftLastAccessTime    As Currency
+    ftLastWriteTime     As Currency
+    nFileSizeHigh       As Long
+    nFileSizeLow        As Long
+    dwReserved0         As Long
+    dwReserved1         As Long
+    cFileName           As String * MAX_PATH
+    cAlternate          As String * 14
+End Type
+Private Const sizeof_WIN32_FIND_DATA As Long = 592
+
 '=========================================================================
 ' Protocol enums and types
 '=========================================================================
 
-Private Enum UcsRfbProtocolStateEnum
-    ucsStaNone
-    ucsStaExpectProtocolVersion
-    ucsStaExpectSecurityHandshake
-    ucsStaExpectSecurityTightResponse
-    ucsStaExpectSecurityVncResponse
-    ucsStaExpectClientInit
-    ucsStaExpectClientMessage
+Private Enum RfbProtocolStateEnum
+    rfbStaNone
+    rfbStaExpectProtocolVersion
+    rfbStaExpectSecurityHandshake
+    rfbStaExpectSecurityTightResponse
+    rfbStaExpectSecurityVncResponse
+    rfbStaExpectClientInit
+    rfbStaExpectClientMessage
 End Enum
 
-Private Enum UcsRfbSecurityTypeEnum
-    ucsSecInvalid = 0
-    ucsSecNone = 1
-    ucsSecVnc = 2
-    ucsSecTight = 16
+Private Enum RfbSecurityTypeEnum
+    rfbSecInvalid = 0
+    rfbSecNone = 1
+    rfbSecVnc = 2
+    rfbSecTight = 16
+    rfbSecUltraVnc = 17
 End Enum
 
-Private Enum UcsRfbMessageEnum
+Private Enum RfbMessageEnum
     '--- client-side
-    ucsMsgSetPixelFormat = 0
-    ucsMsgSetEncodings = 2
-    ucsMsgFramebufferUpdateRequest = 3
-    ucsMsgKeyEvent = 4
-    ucsMsgPointerEvent = 5
-    ucsMsgClientCutText = 6
-    ucsMsgFileListRequest = 130
-    ucsMsgFileDownloadRequest = 131
-    ucsMsgFileUploadRequest = 132
-    ucsMsgFileUploadData = 133
-    ucsMsgFileDownloadCancel = 134
-    ucsMsgFileUploadFailed = 135
-    ucsMsgFileCreateDirectoryRequest = 136
+    rfbMsgSetPixelFormat = 0
+    rfbMsgSetEncodings = 2
+    rfbMsgFramebufferUpdateRequest = 3
+    rfbMsgKeyEvent = 4
+    rfbMsgPointerEvent = 5
+    rfbMsgClientCutText = 6
+    rfbMsgFileTransfer = 7
+    rfbMsgFileListRequest = 130
+    rfbMsgFileDownloadRequest = 131
+    rfbMsgFileUploadRequest = 132
+    rfbMsgFileUploadData = 133
+    rfbMsgFileDownloadCancel = 134
+    rfbMsgFileUploadFailed = 135
+    rfbMsgFileCreateDirectoryRequest = 136
     '--- server-side
-    ucsMsgFramebufferUpdate = 0
-    ucsMsgSetColorMapEntries = 1
-    ucsMsgBell = 2
-    ucsMsgServerCutText = 3
-    ucsMsgFileListData = 130
-    ucsMsgFileDownloadData = 131
-    ucsMsgFileUploadCancel = 132
-    ucsMsgFileDownloadFailed = 133
+    rfbMsgFramebufferUpdate = 0
+    rfbMsgSetColorMapEntries = 1
+    rfbMsgBell = 2
+    rfbMsgServerCutText = 3
+    rfbMsgFileListData = 130
+    rfbMsgFileDownloadData = 131
+    rfbMsgFileUploadCancel = 132
+    rfbMsgFileDownloadFailed = 133
 End Enum
 
-Private Enum UcsRdfEncodingEnum
-    ucsEncRaw = 0
-    ucsEncCopyRect = 1
-    ucsEncRRE = 2
-    ucsEncCoRRE = 4
-    ucsEncHextile = 5
-    ucsEncZlib = 6
-    ucsEncTight = 7
-    ucsEncZlibHextile = 8
-    ucsEncUltra = 9
-    ucsEncUltra2 = 10
-    ucsEncTRLE = 15
-    ucsEncZRLE = 16
-    ucsEncHitachiZYWRLE = 17
-    ucsEncJPEG = 21
-    ucsEncJRLE = 22
-    ucsEncJRLE2 = 24
-    ucsPsEncCursorWithAlpha = -314
-    ucsPsEncExtendedDesktopSize = -308
-    ucsEncTightPNG = -260
-    ucsPsEncCompressionLevel = -256
-    ucsPsEncCursor = -239
-    ucsPsEncPointerPosition = -232
-    ucsPsEncLastRect = -224
-    ucsPsEncDesktopSize = -223
-    ucsPsEncJpegQualityLevel = -32
-    ucsPsEncExtendedClipboard = &HC0A1E5CE
+Private Enum RfbEncodingEnum
+    rfbEncRaw = 0
+    rfbEncCopyRect = 1
+    rfbEncRRE = 2
+    rfbEncCoRRE = 4
+    rfbEncHextile = 5
+    rfbEncZlib = 6
+    rfbEncTight = 7
+    rfbEncZlibHextile = 8
+    rfbEncUltra = 9
+    rfbEncUltra2 = 10
+    rfbEncTRLE = 15
+    rfbEncZRLE = 16
+    rfbEncHitachiZYWRLE = 17
+    rfbEncJPEG = 21
+    rfbEncJRLE = 22
+    rfbEncJRLE2 = 24
+    rfbEncTightPNG = -260
+    '--- pseudo-encodings
+    rfbPsEncCursorWithAlpha = -314
+    rfbPsEncExtendedDesktopSize = -308
+    rfbPsEncCompressionLevel = -256
+    rfbPsEncCursor = -239
+    rfbPsEncPointerPosition = -232
+    rfbPsEncLastRect = -224
+    rfbPsEncDesktopSize = -223
+    rfbPsEncJpegQualityLevel = -32
+    rfbPsEncExtendedClipboard = &HC0A1E5CE
+    rfbPsEncFTProtocolVersion = &HFFFF8002
 End Enum
 
-Private Type UcsPixelFormatType
+Private Type RfbPixelFormat
     BitsPerPixel        As Byte
     Depth               As Byte
     BigEndianFlag       As Byte
@@ -227,23 +267,23 @@ Private Type UcsPixelFormatType
     BlueShift           As Byte
     Padding(0 To 2)     As Byte
 End Type
-Private Const UcsPixelFormatSize As Long = 16
+Private Const sizeof_RfbPixelFormat As Long = 16
 
-Private Type UcsServerInitType
+Private Type RfbServerInit
     FramebufferWidth    As Integer
     FramebufferHeight   As Integer
-    ServerPixelFormat   As UcsPixelFormatType
+    ServerPixelFormat   As RfbPixelFormat
     NameLength          As Long
 End Type
-Private Const UcsServerInitSize As Long = 4 + UcsPixelFormatSize + 4
+Private Const sizeof_RfbServerInit As Long = 4 + sizeof_RfbPixelFormat + 4
 
-Private Type UcsClientSetPixelFormatType
+Private Type RfbClientSetPixelFormat
     MessageType         As Long
-    PixelFormat         As UcsPixelFormatType
+    PixelFormat         As RfbPixelFormat
 End Type
-Private Const UcsClientSetPixelFormatSize As Long = 4 + UcsPixelFormatSize
+Private Const UcsClientSetPixelFormatSize As Long = 4 + sizeof_RfbPixelFormat
 
-Private Type UcsClientSetEncodingsType
+Private Type RfbClientSetEncodings
     MessageType         As Integer
     NumberOfEncodings   As Integer
     EncodingType()      As Long
@@ -255,9 +295,9 @@ Private Type UcsClientSetEncodingsType
     CompressionLevel    As Long
     JpegQualityLevel    As Long
 End Type
-Private Const UcsClientSetEncodingsSize As Long = 4
+Private Const sizeof_RfbClientSetEncodings As Long = 4
 
-Private Type UcsClientFramebufferUpdateRequestType
+Private Type RfbClientFramebufferUpdateRequest
     MessageType         As Byte
     Incremental         As Byte
     XPosition           As Integer
@@ -265,80 +305,182 @@ Private Type UcsClientFramebufferUpdateRequestType
     Width               As Integer
     Height              As Integer
 End Type
-Private Const UcsClientFramebufferUpdateRequestSize As Long = 10
+Private Const sizeof_RfbClientFramebufferUpdateRequest As Long = 10
 
-Private Type UcsClientKeyEventType
+Private Type RfbClientKeyEvent
     MessageType         As Byte
     DownFlag            As Byte
     Padding(0 To 1)     As Byte
     Key                 As Long
 End Type
-Private Const UcsClientKeyEventSize As Long = 8
+Private Const sizeof_RfbClientKeyEvent As Long = 8
 
-Private Type UcsClientPointerEventType
+Private Type RfbClientPointerEvent
     MessageType         As Byte
     ButtonMask          As Byte
     XPosition           As Integer
     YPosition           As Integer
 End Type
-Private Const UcsClientPointerEventSize As Long = 6
+Private Const sizeof_RfbClientPointerEvent As Long = 6
 
-Private Type UcsClientCutTextType
+Private Type RfbClientCutText
     MessageType         As Long
     Length              As Long
     Text()              As Byte
 End Type
-Private Const UcsClientCutTextSize As Long = 8
+Private Const sizeof_RfbClientCutText As Long = 8
 
-Private Type UcsServerRectangleType
+Private Type RfbServerRectangle
     XPosition           As Integer
     YPosition           As Integer
     Width               As Integer
     Height              As Integer
     EncodingType        As Long
 End Type
-Private Const UcsServerRectangleSize As Long = 12
+Private Const sizeof_RfbServerRectangle As Long = 12
 
-Private Type UcsServerFramebufferUpdateType
+Private Type RfbServerFramebufferUpdate
     MessageType         As Integer
     NumberOfRectangles  As Integer
 End Type
-Private Const UcsServerFramebufferUpdateSize As Long = 4
+Private Const sizeof_RfbServerFramebufferUpdate As Long = 4
 
-'Private Type UcsServerRgbValueType
+'Private Type RfbServerRgbValue
 '    Red                 As Integer
 '    Green               As Integer
 '    Blue                As Integer
 'End Type
-'Private Const UcsServerRgbValueSize As Long = 6
+'Private Const sizeof_RfbServerRgbValue As Long = 6
 '
-'Private Type UcsServerSetColorMapEntriesType
+'Private Type RfbServerSetColorMapEntries
 '    MessageType         As Integer
 '    FirstColor          As Integer
 '    NumberOfColors      As Integer
 'End Type
-'Private Const UcsServerSetColorMapEntriesSize As Long = 6
+'Private Const sizeof_RfbServerSetColorMapEntries As Long = 6
 
-'Private Type UcsServerCutTextType
+'Private Type RfbServerCutText
 '    MessageType         As Long
 '    Length              As Long
 'End Type
-'Private Const UcsServerCutTextSize As Long = 8
+'Private Const sizeof_RfbServerCutText As Long = 8
 
-Private Type UcsTightInteractionCapabilitiesType
+Private Type RfbFileTransfer
+    MessageType         As Byte
+    ContentType         As Byte
+    ContentParam        As Integer
+    Size                As Long
+    Length              As Long
+End Type
+Private Const sizeof_RfbFileTransfer As Long = 12
+
+Private Enum RfbFileTransferContentEnum
+    rfbCntDirContentRequest = 1             ' Client asks for the content of a given Server directory
+    rfbCntDirPacket = 2                     ' Full directory name or full file name. ' Null content means end of Directory
+    rfbCntFileTransferRequest = 3           ' Client asks the server for the transfer of a given file
+    rfbCntFileHeader = 4                    ' First packet of a file transfer, containing file's features
+    rfbCntFilePacket = 5                    ' One chunk of the file
+    rfbCntEndOfFile = 6                     ' End of file transfer (the file has been received or error)
+    rfbCntAbortFileTransfer = 7             ' The file transfer must be aborted, whatever the state
+    rfbCntFileTransferOffer = 8             ' The client offers to send a file to the server
+    rfbCntFileAcceptHeader = 9              ' The server accepts or rejects the file
+    rfbCntCommand = 10                      ' The Client sends a simple command (File Delete, Dir create etc...)
+    rfbCntCommandReturn = 11                ' The Client receives the server's answer about a simple command
+    rfbCntFileChecksums = 12                ' The zipped checksums of the destination file (Delta Transfer)
+    rfbCntFileTransferAccess = 14           ' Request FileTransfer authorization
+    rfbCntFileTransferSessionStart = 15     ' indicates a client has the FT gui open
+    rfbCntFileTransferSessionEnd = 16       ' indicates a client has closed the ft gui.
+    rfbCntFileTransferProtocolVersion = 17  ' indicates ft protocol version understood by sender. contentParam is version #
+       
+    ' Content params -- rfbCntDirContentRequest client Request
+    rfbCntReqDirContent = 1                 ' Request a Server Directory contents
+    rfbCntReqDrivesList = 2                 ' Request the server's drives list
+    rfbCntReqDirRecursiveList = 3           ' Request a server directory content recursive sorted list
+    rfbCntReqDirRecursiveSize = 4           ' Request a server directory content recursive size
+       
+    ' Content params -- rfbCntDirPacket & rfbCntCommandReturn server Answer
+    rfbAnsDirectory = 1                     ' Reception of a directory name
+    rfbAnsFile = 2                          ' Reception of a file name
+    rfbAnsDrivesList = 3                    ' Reception of a list of drives
+    rfbAnsDirCreate = 4                     ' Response to a create dir command
+    rfbAnsDirDelete = 5                     ' Response to a delete dir command
+    rfbAnsFileCreate = 6                    ' Response to a create file command
+    rfbAnsFileDelete = 7                    ' Response to a delete file command
+    rfbAnsFileRename = 8                    ' Response to a rename file command
+    rfbAnsDirRename = 9                     ' Response to a rename dir command
+    rfbAnsDirRecursiveListItem = 10
+    rfbAnsDirRecursiveSize = 11
+       
+    ' Content params -- rfbCntCommand Command
+    rfbCmdDirCreate = 1                     ' Request the server to create the given directory
+    rfbCmdDirDelete = 2                     ' Request the server to delete the given directory
+    rfbCmdFileCreate = 3                    ' Request the server to create the given file
+    rfbCmdFileDelete = 4                    ' Request the server to delete the given file
+    rfbCmdFileRename = 5                    ' Request the server to rename the given file
+    rfbCmdDirRename = 6                     ' Request the server to rename the given directory
+       
+    ' Errors -- content params or "size" field
+    rfbRetErrorUnknownCmd = 1               ' Unknown FileTransfer command.
+    rfbRetErrorCmd = -1                     ' Error when a command fails on remote side (ret in "size" field)
+End Enum
+
+Private Type RfbTightInteractionCapabilities
     NumberOfServerMsgs  As Integer
     NumberOfClientMsgs  As Integer
     NumberOfEncodings   As Integer
     Padding             As Integer
 End Type
-Private Const UcsTightInteractionCapabilitiesSize As Long = 8
+Private Const sizeof_RfbTightInteractionCapabilities As Long = 8
 
-Private Type UcsTightCapabilityType
+Private Type RfbTightCapability
     Code                As Long
     Vendor(0 To 3)      As Byte
     Signature(0 To 7)   As Byte
 End Type
-Private Const UcsTightCapabilitySize As Long = 16
+Private Const sizeof_RfbTightCapability As Long = 16
+
+'=========================================================================
+' Constants and member variables
+'=========================================================================
+
+Private Const STR_APP_NAME          As String = "VbVncServer"
+Private Const STR_PROTOCOL_VERSION  As String = "RFB 003.008" & vbLf
+Private Const STR_TIGHT_SERVER_MSGS As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
+Private Const STR_TIGHT_CLIENT_MSGS As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
+Private Const STR_TIGHT_ENCODINGS   As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-32;TGHT;JPEGQLVL|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR|-256;TGHT;COMPRLVL"
+Private Const STR_TIGHT_AUTH_TYPES  As String = "2;STDV;VNCAUTH_"
+Private Const LNG_TILE_SIZE         As Long = 256
+
+Private m_cConnections          As Collection
+Private m_sPassword             As String
+'--- client
+Private m_lParentWeakRef        As Long
+Private m_eState                As RfbProtocolStateEnum
+Private WithEvents m_oSocket    As cAsyncSocket
+Attribute m_oSocket.VB_VarHelpID = -1
+Private m_uRecvBuffer           As UcsBuffer
+Private m_uSendBuffer           As UcsBuffer
+Private m_eSecurityType         As RfbSecurityTypeEnum
+Private m_baSecurityChallenge() As Byte
+Private m_uClientPixelFormat    As RfbClientSetPixelFormat
+Private m_uClientEncodings      As RfbClientSetEncodings
+Private m_uClientFramebufferUpdate As RfbClientFramebufferUpdateRequest
+Private m_uClientKeyEvent       As RfbClientKeyEvent
+Private m_uClientPointerEvent   As RfbClientPointerEvent
+Private m_uClientCutText        As RfbClientCutText
+Private m_uCaptureCtx           As UcsCaptureContext
+Private m_uCaptureFrame         As UcsCaptureFrame
+Private m_pTimer                As IUnknown
+#If ImplZlib Then
+    Private m_oZipArchive       As cZipArchive
+    Private m_hDeflateCtx       As Long
+#End If
+Private m_pWicFactory           As stdole.IUnknown
+Private m_aWicFormatJpeg()      As Long
+Private m_aWicFormatPng()       As Long
+Private m_aWicFormat32bppPBGRA() As Long
+Private m_pImageStream          As stdole.IUnknown
+Private m_uFileBuffer           As UcsBuffer
 
 Private Type UcsBuffer
     Data()              As Byte
@@ -382,48 +524,6 @@ Private Type UcsCaptureFrame
     NumTiles            As Long
     Tiles()             As UcsCaptureTile
 End Type
-
-'=========================================================================
-' Constants and member variables
-'=========================================================================
-
-Private Const STR_APP_NAME          As String = "VbVncServer"
-Private Const STR_PROTOCOL_VERSION  As String = "RFB 003.008" & vbLf
-Private Const STR_TIGHT_SERVER_MSGS As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
-Private Const STR_TIGHT_CLIENT_MSGS As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
-Private Const STR_TIGHT_ENCODINGS   As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-32;TGHT;JPEGQLVL|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR|-256;TGHT;COMPRLVL"
-Private Const STR_TIGHT_AUTH_TYPES  As String = "2;STDV;VNCAUTH_"
-Private Const TILE_SIZE             As Long = 256
-
-Private m_cConnections          As Collection
-Private m_sPassword             As String
-'--- client
-Private m_lParentWeakRef        As Long
-Private m_eState                As UcsRfbProtocolStateEnum
-Private WithEvents m_oSocket    As cAsyncSocket
-Attribute m_oSocket.VB_VarHelpID = -1
-Private m_uRecvBuffer           As UcsBuffer
-Private m_uSendBuffer           As UcsBuffer
-Private m_eSecurityType         As UcsRfbSecurityTypeEnum
-Private m_baSecurityChallenge() As Byte
-Private m_uClientPixelFormat    As UcsClientSetPixelFormatType
-Private m_uClientEncodings      As UcsClientSetEncodingsType
-Private m_uClientFramebufferUpdate As UcsClientFramebufferUpdateRequestType
-Private m_uClientKey            As UcsClientKeyEventType
-Private m_uClientPointer        As UcsClientPointerEventType
-Private m_uClientCutText        As UcsClientCutTextType
-Private m_uCaptureCtx           As UcsCaptureContext
-Private m_uCaptureFrame         As UcsCaptureFrame
-Private m_pTimer                As IUnknown
-#If ImplZlib Then
-    Private m_oZipArchive       As cZipArchive
-    Private m_hDeflateCtx       As Long
-#End If
-Private m_pWicFactory           As stdole.IUnknown
-Private m_aWicFormatJpeg()      As Long
-Private m_aWicFormatPng()       As Long
-Private m_aWicFormat32bppPBGRA() As Long
-Private m_pImageStream          As stdole.IUnknown
 
 '=========================================================================
 ' Error handling
@@ -491,7 +591,7 @@ Friend Function frNewConnection(oSocket As cAsyncSocket, sPassword As String, By
     If Not pvSendProtocolVersion(m_uSendBuffer, m_oSocket) Then
         GoTo QH
     End If
-    m_eState = ucsStaExpectProtocolVersion
+    m_eState = rfbStaExpectProtocolVersion
     '--- init WIC state
     If WICCreateImagingFactory_Proxy(WINCODEC_SDK_VERSION2, m_pWicFactory) < 0 Then
         Call WICCreateImagingFactory_Proxy(WINCODEC_SDK_VERSION1, m_pWicFactory)
@@ -530,20 +630,21 @@ Private Function pvSendProtocolVersion(uOutput As UcsBuffer, oSocket As cAsyncSo
 End Function
 
 Private Function pvSendSecurityTypes(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
-    pvBufferWriteLong uOutput, 2
-    pvBufferWriteLong uOutput, IIf(LenB(m_sPassword) <> 0, ucsSecVnc, ucsSecNone)
-    pvBufferWriteLong uOutput, ucsSecTight
+    pvBufferWriteLong uOutput, 3
+    pvBufferWriteLong uOutput, IIf(LenB(m_sPassword) <> 0, rfbSecVnc, rfbSecNone)
+    pvBufferWriteLong uOutput, IIf(LenB(m_sPassword) <> 0, rfbSecUltraVnc, rfbSecUltraVnc) '-- ToDo: choose password protected UltraVNC auth
+    pvBufferWriteLong uOutput, rfbSecTight
     '--- success (or failure)
     pvSendSecurityTypes = pvBufferSendAsync(uOutput, oSocket)
 End Function
 
-Private Function pvSendSecurityChallenge(baChallenge() As Byte, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+Private Function pvSendSecurityChallenge(uOutput As UcsBuffer, oSocket As cAsyncSocket, baChallenge() As Byte) As Boolean
     pvBufferWriteArray uOutput, baChallenge
     '--- success (or failure)
     pvSendSecurityChallenge = pvBufferSendAsync(uOutput, oSocket)
 End Function
 
-Private Function pvSendSecurityResult(ByVal lResult As Long, sReason As String, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
+Private Function pvSendSecurityResult(uOutput As UcsBuffer, oSocket As cAsyncSocket, ByVal lResult As Long, Optional sReason As String) As Boolean
     pvBufferWriteLong uOutput, lResult, Size:=4
     If LenB(sReason) <> 0 Then
         pvBufferWriteLong uOutput, Len(sReason), Size:=4
@@ -556,7 +657,7 @@ End Function
 Private Function pvSendTightSecurityType(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
     Const NumberOfTunnels As Long = 0
     Const NumberOfAuths As Long = 0
-    Dim uAuthTypes()    As UcsTightCapabilityType
+    Dim uAuthTypes()    As RfbTightCapability
     
     pvBufferWriteLong uOutput, NumberOfTunnels, Size:=4
     If LenB(m_sPassword) = 0 Then
@@ -564,18 +665,18 @@ Private Function pvSendTightSecurityType(uOutput As UcsBuffer, oSocket As cAsync
     Else
         pvInitTightCapabilities uAuthTypes, STR_TIGHT_AUTH_TYPES
         pvBufferWriteLong uOutput, UBound(uAuthTypes) + 1, Size:=4
-        pvBufferWriteBlob uOutput, VarPtr(uAuthTypes(0)), (UBound(uAuthTypes) + 1) * UcsTightCapabilitySize
+        pvBufferWriteBlob uOutput, VarPtr(uAuthTypes(0)), (UBound(uAuthTypes) + 1) * sizeof_RfbTightCapability
     End If
     '--- success (or failure)
     pvSendTightSecurityType = pvBufferSendAsync(uOutput, oSocket)
 End Function
 
-Private Function pvSendServerInit(uCtx As UcsCaptureContext, sName As String, uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
-    Dim uInit           As UcsServerInitType
-    Dim uInteraction    As UcsTightInteractionCapabilitiesType
-    Dim uServerMsgs()   As UcsTightCapabilityType
-    Dim uClientMsgs()   As UcsTightCapabilityType
-    Dim uEncodings()    As UcsTightCapabilityType
+Private Function pvSendServerInit(uOutput As UcsBuffer, oSocket As cAsyncSocket, uCtx As UcsCaptureContext, sName As String) As Boolean
+    Dim uInit           As RfbServerInit
+    Dim uInteraction    As RfbTightInteractionCapabilities
+    Dim uServerMsgs()   As RfbTightCapability
+    Dim uClientMsgs()   As RfbTightCapability
+    Dim uEncodings()    As RfbTightCapability
     
     With uInit
         .FramebufferWidth = pvNetworkShort(uCtx.Width)
@@ -596,9 +697,9 @@ Private Function pvSendServerInit(uCtx As UcsCaptureContext, sName As String, uO
         m_uClientPixelFormat.PixelFormat = .ServerPixelFormat
         .NameLength = pvNetworkLong(Len(sName))
     End With
-    pvBufferWriteBlob uOutput, VarPtr(uInit), UcsServerInitSize
+    pvBufferWriteBlob uOutput, VarPtr(uInit), sizeof_RfbServerInit
     pvBufferWriteArray uOutput, StrConv(sName, vbFromUnicode)
-    If m_eSecurityType = ucsSecTight Then
+    If m_eSecurityType = rfbSecTight Then
         pvInitTightCapabilities uServerMsgs, STR_TIGHT_SERVER_MSGS
         pvInitTightCapabilities uClientMsgs, STR_TIGHT_CLIENT_MSGS
         pvInitTightCapabilities uEncodings, STR_TIGHT_ENCODINGS
@@ -607,25 +708,25 @@ Private Function pvSendServerInit(uCtx As UcsCaptureContext, sName As String, uO
             .NumberOfClientMsgs = pvNetworkShort(UBound(uClientMsgs) + 1)
             .NumberOfEncodings = pvNetworkShort(UBound(uEncodings) + 1)
         End With
-        pvBufferWriteBlob uOutput, VarPtr(uInteraction), UcsTightInteractionCapabilitiesSize
-        pvBufferWriteBlob uOutput, VarPtr(uServerMsgs(0)), (UBound(uServerMsgs) + 1) * UcsTightCapabilitySize
-        pvBufferWriteBlob uOutput, VarPtr(uClientMsgs(0)), (UBound(uClientMsgs) + 1) * UcsTightCapabilitySize
-        pvBufferWriteBlob uOutput, VarPtr(uEncodings(0)), (UBound(uEncodings) + 1) * UcsTightCapabilitySize
+        pvBufferWriteBlob uOutput, VarPtr(uInteraction), sizeof_RfbTightInteractionCapabilities
+        pvBufferWriteBlob uOutput, VarPtr(uServerMsgs(0)), (UBound(uServerMsgs) + 1) * sizeof_RfbTightCapability
+        pvBufferWriteBlob uOutput, VarPtr(uClientMsgs(0)), (UBound(uClientMsgs) + 1) * sizeof_RfbTightCapability
+        pvBufferWriteBlob uOutput, VarPtr(uEncodings(0)), (UBound(uEncodings) + 1) * sizeof_RfbTightCapability
     End If
     '--- succees (or failure)
     pvSendServerInit = pvBufferSendAsync(uOutput, oSocket)
 End Function
 
 Private Function pvSendEmptyFramebufferUpdate(uOutput As UcsBuffer, oSocket As cAsyncSocket) As Boolean
-    Dim uUpdate         As UcsServerFramebufferUpdateType
-    Dim uRectangle      As UcsServerRectangleType
+    Dim uUpdate         As RfbServerFramebufferUpdate
+    Dim uRectangle      As RfbServerRectangle
     
     With uUpdate
-        .MessageType = ucsMsgFramebufferUpdate
+        .MessageType = rfbMsgFramebufferUpdate
         .NumberOfRectangles = pvNetworkShort(1)
     End With
-    pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
-    pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
+    pvBufferWriteBlob uOutput, VarPtr(uUpdate), sizeof_RfbServerFramebufferUpdate
+    pvBufferWriteBlob uOutput, VarPtr(uRectangle), sizeof_RfbServerRectangle
     '--- success (or failure)
     pvSendEmptyFramebufferUpdate = pvBufferSendAsync(uOutput, oSocket)
 End Function
@@ -637,7 +738,7 @@ Private Sub pvHandleReceive()
     Dim baBuffer()      As Byte
     Dim vElem           As Variant
     Dim baPassword()    As Byte
-    Dim eSecurityType   As UcsRfbSecurityTypeEnum
+    Dim eSecurityType   As RfbSecurityTypeEnum
     
     On Error GoTo EH
     Do
@@ -651,11 +752,11 @@ Private Sub pvHandleReceive()
         With m_uRecvBuffer
             Do While .Pos < .Size
                 Select Case m_eState
-                Case ucsStaExpectClientMessage
+                Case rfbStaExpectClientMessage
                     If Not pvHandleClientMessage(m_uRecvBuffer) Then
                         Exit Do
                     End If
-                Case ucsStaExpectProtocolVersion
+                Case rfbStaExpectProtocolVersion
                     If .Size - .Pos < Len(STR_PROTOCOL_VERSION) Then
                         Exit Do
                     End If
@@ -664,47 +765,52 @@ Private Sub pvHandleReceive()
                     If Not pvSendSecurityTypes(m_uSendBuffer, m_oSocket) Then
                         GoTo QH
                     End If
-                    m_eState = ucsStaExpectSecurityHandshake
-                Case ucsStaExpectSecurityHandshake
+                    m_eState = rfbStaExpectSecurityHandshake
+                Case rfbStaExpectSecurityHandshake
                     m_eSecurityType = .Data(.Pos)
                     .Pos = .Pos + 1
                     eSecurityType = m_eSecurityType
 DoAuth:
                     Select Case eSecurityType
-                    Case ucsSecNone
+                    Case rfbSecNone
                         If LenB(m_sPassword) <> 0 Then
-                            pvSendSecurityResult SecurityResultFailed, "Password required", m_uSendBuffer, m_oSocket
+                            pvSendSecurityResult m_uSendBuffer, m_oSocket, SecurityResultFailed, "Password required"
                             GoTo QH
                         End If
-                        If Not pvSendSecurityResult(SecurityResultOk, vbNullString, m_uSendBuffer, m_oSocket) Then
+                        If Not pvSendSecurityResult(m_uSendBuffer, m_oSocket, SecurityResultOk) Then
                             GoTo QH
                         End If
-                        m_eState = ucsStaExpectClientInit
-                    Case ucsSecVnc
+                        m_eState = rfbStaExpectClientInit
+                    Case rfbSecVnc
                         m_baSecurityChallenge = pvCryptoRandomBytes(16)
-                        If Not pvSendSecurityChallenge(m_baSecurityChallenge, m_uSendBuffer, m_oSocket) Then
+                        If Not pvSendSecurityChallenge(m_uSendBuffer, m_oSocket, m_baSecurityChallenge) Then
                             GoTo QH
                         End If
-                        m_eState = ucsStaExpectSecurityVncResponse
-                    Case ucsSecTight
+                        m_eState = rfbStaExpectSecurityVncResponse
+                    Case rfbSecTight
                         If Not pvSendTightSecurityType(m_uSendBuffer, m_oSocket) Then
                             GoTo QH
                         End If
                         If LenB(m_sPassword) = 0 Then
-                            If Not pvSendSecurityResult(SecurityResultOk, vbNullString, m_uSendBuffer, m_oSocket) Then
+                            If Not pvSendSecurityResult(m_uSendBuffer, m_oSocket, SecurityResultOk) Then
                                 GoTo QH
                             End If
-                            m_eState = ucsStaExpectClientInit
+                            m_eState = rfbStaExpectClientInit
                         Else
-                            m_eState = ucsStaExpectSecurityTightResponse
+                            m_eState = rfbStaExpectSecurityTightResponse
                         End If
+                    Case rfbSecUltraVnc
+                        If Not pvSendSecurityResult(m_uSendBuffer, m_oSocket, SecurityResultOk) Then
+                            GoTo QH
+                        End If
+                        m_eState = rfbStaExpectClientInit
                     Case Else
                         #If ImplUseDebugLog Then
                             DebugLog MODULE_NAME, FUNC_NAME, "Unknown security type (" & eSecurityType & ")"
                         #End If
                         GoTo QH
                     End Select
-                Case ucsStaExpectSecurityTightResponse
+                Case rfbStaExpectSecurityTightResponse
                     If .Size - .Pos < 4 Then
                         Exit Do
                     End If
@@ -712,7 +818,7 @@ DoAuth:
                     .Pos = .Pos + 4
                     eSecurityType = pvNetworkLong(eSecurityType)
                     GoTo DoAuth
-                Case ucsStaExpectSecurityVncResponse
+                Case rfbStaExpectSecurityVncResponse
                     If .Size - .Pos < 16 Then
                         Exit Do
                     End If
@@ -721,25 +827,25 @@ DoAuth:
                         GoTo QH
                     End If
                     If Not pvArrayEqual(.Data, .Pos, 16, baPassword) Then
-                        pvSendSecurityResult SecurityResultFailed, "Wrong password", m_uSendBuffer, m_oSocket
+                        pvSendSecurityResult m_uSendBuffer, m_oSocket, SecurityResultFailed, "Wrong password"
                         GoTo QH
                     End If
                     .Pos = .Pos + 16
-                    If Not pvSendSecurityResult(SecurityResultOk, vbNullString, m_uSendBuffer, m_oSocket) Then
+                    If Not pvSendSecurityResult(m_uSendBuffer, m_oSocket, SecurityResultOk) Then
                         GoTo QH
                     End If
-                    m_eState = ucsStaExpectClientInit
-                Case ucsStaExpectClientInit
+                    m_eState = rfbStaExpectClientInit
+                Case rfbStaExpectClientInit
                     '--- ignore shared flag
                     .Pos = .Pos + 1
                     vElem = pvCaptureEnumDevices().Item(1)
                     If Not pvCaptureInit(m_uCaptureCtx, vElem(0), 1) Then
                         GoTo QH
                     End If
-                    If Not pvSendServerInit(m_uCaptureCtx, STR_APP_NAME, m_uSendBuffer, m_oSocket) Then
+                    If Not pvSendServerInit(m_uSendBuffer, m_oSocket, m_uCaptureCtx, STR_APP_NAME) Then
                         GoTo QH
                     End If
-                    m_eState = ucsStaExpectClientMessage
+                    m_eState = rfbStaExpectClientMessage
                 Case Else
                     Exit Do
                 End Select
@@ -755,7 +861,7 @@ DoAuth:
     Loop
     Exit Sub
 QH:
-    m_eState = ucsStaNone
+    m_eState = rfbStaNone
     Exit Sub
 EH:
     PrintError FUNC_NAME
@@ -763,13 +869,16 @@ End Sub
 
 Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
     Const FUNC_NAME     As String = "pvHandleClientMessage"
+    Const FT_PROTO_VERSION_3 As Long = 3
     Dim lIdx            As Long
-    Dim uPointerEvent   As UcsClientPointerEventType
+    Dim uPointerEvent   As RfbClientPointerEvent
+    Dim uFileTransfer   As RfbFileTransfer
+    Dim baData()        As Byte
     
     On Error GoTo EH
     With uInput
         Select Case .Data(.Pos)
-        Case ucsMsgSetPixelFormat
+        Case rfbMsgSetPixelFormat
             If .Size - .Pos < UcsClientSetPixelFormatSize Then
                 GoTo QH
             End If
@@ -780,20 +889,20 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 .BlueMax = pvNetworkShort(.BlueMax)
             End With
             .Pos = .Pos + UcsClientSetPixelFormatSize
-        Case ucsMsgSetEncodings
-            If .Size - .Pos < UcsClientSetEncodingsSize Then
+        Case rfbMsgSetEncodings
+            If .Size - .Pos < sizeof_RfbClientSetEncodings Then
                 GoTo QH
             End If
-            Call CopyMemory(m_uClientEncodings, .Data(.Pos), UcsClientSetEncodingsSize)
+            Call CopyMemory(m_uClientEncodings, .Data(.Pos), sizeof_RfbClientSetEncodings)
             With m_uClientEncodings
                 .NumberOfEncodings = pvNetworkShort(.NumberOfEncodings)
             End With
             If m_uClientEncodings.NumberOfEncodings > 0 Then
-                If .Size - .Pos < UcsClientSetEncodingsSize + m_uClientEncodings.NumberOfEncodings * 4 Then
+                If .Size - .Pos < sizeof_RfbClientSetEncodings + m_uClientEncodings.NumberOfEncodings * 4 Then
                     GoTo QH
                 End If
                 ReDim m_uClientEncodings.EncodingType(0 To m_uClientEncodings.NumberOfEncodings - 1) As Long
-                Call CopyMemory(m_uClientEncodings.EncodingType(0), .Data(.Pos + UcsClientSetEncodingsSize), m_uClientEncodings.NumberOfEncodings * 4)
+                Call CopyMemory(m_uClientEncodings.EncodingType(0), .Data(.Pos + sizeof_RfbClientSetEncodings), m_uClientEncodings.NumberOfEncodings * 4)
                 With m_uClientEncodings
                     .HasCopyRect = False
                     .HasZlib = False
@@ -805,89 +914,114 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                     For lIdx = 0 To .NumberOfEncodings - 1
                         .EncodingType(lIdx) = pvNetworkLong(.EncodingType(lIdx))
                         Select Case .EncodingType(lIdx)
-                        Case ucsEncCopyRect
+                        Case rfbEncCopyRect
                             .HasCopyRect = True
-                        Case ucsEncZlib
+                        Case rfbEncZlib
                             .HasZlib = True
-                        Case ucsEncTight
+                        Case rfbEncTight
                             .HasTight = True
-                        Case ucsPsEncCursorWithAlpha
+                        Case rfbPsEncCursorWithAlpha
                             .HasCursorWithAlpha = True
-                        Case ucsPsEncCursor
+                        Case rfbPsEncCursor
                             .HasCursor = True
-                        Case ucsPsEncCompressionLevel To ucsPsEncCompressionLevel + 9
-                            .CompressionLevel = .EncodingType(lIdx) - ucsPsEncCompressionLevel + 1
-                        Case ucsPsEncJpegQualityLevel To ucsPsEncJpegQualityLevel + 9
-                            .JpegQualityLevel = .EncodingType(lIdx) - ucsPsEncJpegQualityLevel + 1
-                        Case ucsEncRaw, ucsEncRRE, ucsEncCoRRE, ucsEncHextile, ucsEncZlibHextile, ucsEncUltra, ucsEncUltra2, ucsEncTRLE, ucsEncZRLE, _
-                                ucsEncHitachiZYWRLE, ucsEncJPEG, ucsEncJRLE, ucsEncJRLE2, ucsEncTightPNG, _
-                                ucsPsEncExtendedDesktopSize, ucsPsEncPointerPosition, ucsPsEncLastRect, ucsPsEncDesktopSize, ucsPsEncExtendedClipboard
+                        Case rfbPsEncCompressionLevel To rfbPsEncCompressionLevel + 9
+                            .CompressionLevel = .EncodingType(lIdx) - rfbPsEncCompressionLevel + 1
+                        Case rfbPsEncJpegQualityLevel To rfbPsEncJpegQualityLevel + 9
+                            .JpegQualityLevel = .EncodingType(lIdx) - rfbPsEncJpegQualityLevel + 1
+                        Case rfbPsEncFTProtocolVersion
+                            If Not pvSendFileTransfer(m_uSendBuffer, m_oSocket, rfbCntFileTransferProtocolVersion, FT_PROTO_VERSION_3) Then
+                                GoTo QH
+                            End If
+                        Case rfbEncRaw, rfbEncRRE, rfbEncCoRRE, rfbEncHextile, rfbEncZlibHextile, rfbEncUltra, rfbEncUltra2, rfbEncTRLE, rfbEncZRLE, _
+                                rfbEncHitachiZYWRLE, rfbEncJPEG, rfbEncJRLE, rfbEncJRLE2, rfbEncTightPNG, _
+                                rfbPsEncExtendedDesktopSize, rfbPsEncPointerPosition, rfbPsEncLastRect, rfbPsEncDesktopSize, rfbPsEncExtendedClipboard
                             '--- do nothing
                         Case Else
                             #If ImplUseDebugLog Then
-'                                DebugLog MODULE_NAME, FUNC_NAME, "Unknown encoding type " & .EncodingType(lIdx) & " (&H" & Hex$(.EncodingType(lIdx)) & ")"
+                                'DebugLog MODULE_NAME, FUNC_NAME, "Unknown encoding type " & .EncodingType(lIdx) & " (&H" & Hex$(.EncodingType(lIdx)) & ")"
                             #End If
                         End Select
                     Next
                 End With
             End If
-            .Pos = .Pos + UcsClientSetEncodingsSize + m_uClientEncodings.NumberOfEncodings * 4
+            .Pos = .Pos + sizeof_RfbClientSetEncodings + m_uClientEncodings.NumberOfEncodings * 4
             Set m_pTimer = Nothing
             If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer, m_oSocket) Then
                 GoTo QH
             End If
-        Case ucsMsgFramebufferUpdateRequest
-            If .Size - .Pos < UcsClientFramebufferUpdateRequestSize Then
+        Case rfbMsgFramebufferUpdateRequest
+            If .Size - .Pos < sizeof_RfbClientFramebufferUpdateRequest Then
                 GoTo QH
             End If
-            Call CopyMemory(m_uClientFramebufferUpdate, .Data(.Pos), UcsClientFramebufferUpdateRequestSize)
+            Call CopyMemory(m_uClientFramebufferUpdate, .Data(.Pos), sizeof_RfbClientFramebufferUpdateRequest)
             With m_uClientFramebufferUpdate
                 .XPosition = pvNetworkShort(.XPosition)
                 .YPosition = pvNetworkShort(.YPosition)
                 .Width = pvNetworkShort(.Width)
                 .Height = pvNetworkShort(.Height)
             End With
-            .Pos = .Pos + UcsClientFramebufferUpdateRequestSize
+            .Pos = .Pos + sizeof_RfbClientFramebufferUpdateRequest
             If m_uClientFramebufferUpdate.Incremental = 0 Then
                 Call RedrawWindow(0, ByVal 0, 0, RDW_INVALIDATE Or RDW_ALLCHILDREN Or RDW_ERASENOW)
             End If
             Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
-        Case ucsMsgKeyEvent
-            If .Size - .Pos < UcsClientKeyEventSize Then
+        Case rfbMsgKeyEvent
+            If .Size - .Pos < sizeof_RfbClientKeyEvent Then
                 GoTo QH
             End If
-            Call CopyMemory(m_uClientKey, .Data(.Pos), UcsClientKeyEventSize)
-            m_uClientKey.Key = pvNetworkLong(m_uClientKey.Key)
-            .Pos = .Pos + UcsClientKeyEventSize
-        Case ucsMsgPointerEvent
-            If .Size - .Pos < UcsClientPointerEventSize Then
+            Call CopyMemory(m_uClientKeyEvent, .Data(.Pos), sizeof_RfbClientKeyEvent)
+            m_uClientKeyEvent.Key = pvNetworkLong(m_uClientKeyEvent.Key)
+            .Pos = .Pos + sizeof_RfbClientKeyEvent
+        Case rfbMsgPointerEvent
+            If .Size - .Pos < sizeof_RfbClientPointerEvent Then
                 GoTo QH
             End If
-            Call CopyMemory(uPointerEvent, .Data(.Pos), UcsClientPointerEventSize)
+            Call CopyMemory(uPointerEvent, .Data(.Pos), sizeof_RfbClientPointerEvent)
             With uPointerEvent
                 .XPosition = pvNetworkShort(.XPosition)
                 .YPosition = pvNetworkShort(.YPosition)
             End With
-            .Pos = .Pos + UcsClientPointerEventSize
+            .Pos = .Pos + sizeof_RfbClientPointerEvent
             If Not pvHandlePointerEvent(m_uCaptureCtx, uPointerEvent) Then
                 GoTo QH
             End If
-        Case ucsMsgClientCutText
-            If .Size - .Pos < UcsClientCutTextSize Then
+        Case rfbMsgClientCutText
+            If .Size - .Pos < sizeof_RfbClientCutText Then
                 GoTo QH
             End If
-            Call CopyMemory(m_uClientCutText, .Data(.Pos), UcsClientCutTextSize)
+            Call CopyMemory(m_uClientCutText, .Data(.Pos), sizeof_RfbClientCutText)
             With m_uClientCutText
                 .Length = pvNetworkLong(.Length)
             End With
             If m_uClientCutText.Length > 0 Then
-                If .Size - .Pos < UcsClientCutTextSize + m_uClientCutText.Length Then
+                If .Size - .Pos < sizeof_RfbClientCutText + m_uClientCutText.Length Then
                     GoTo QH
                 End If
                 pvArrayAllocate m_uClientCutText.Text, m_uClientCutText.Length, FUNC_NAME
-                Call CopyMemory(m_uClientCutText.Text(0), .Data(.Pos + UcsClientCutTextSize), m_uClientCutText.Length)
+                Call CopyMemory(m_uClientCutText.Text(0), .Data(.Pos + sizeof_RfbClientCutText), m_uClientCutText.Length)
             End If
-            .Pos = .Pos + UcsClientCutTextSize + m_uClientCutText.Length
+            .Pos = .Pos + sizeof_RfbClientCutText + m_uClientCutText.Length
+        Case rfbMsgFileTransfer
+            If .Size - .Pos < sizeof_RfbFileTransfer Then
+                GoTo QH
+            End If
+            Call CopyMemory(uFileTransfer, .Data(.Pos), sizeof_RfbFileTransfer)
+            uFileTransfer.Size = pvNetworkLong(uFileTransfer.Size)
+            uFileTransfer.Length = pvNetworkLong(uFileTransfer.Length)
+            If .Size - .Pos < sizeof_RfbFileTransfer + uFileTransfer.Length Then
+                GoTo QH
+            End If
+            .Pos = .Pos + sizeof_RfbFileTransfer
+            If uFileTransfer.Length > 0 Then
+                ReDim baData(0 To uFileTransfer.Length - 1) As Byte
+                Call CopyMemory(baData(0), .Data(.Pos), uFileTransfer.Length)
+                .Pos = .Pos + uFileTransfer.Length
+            Else
+                baData = vbNullString
+            End If
+            If Not pvHandleFileTransfer(uFileTransfer, baData) Then
+                GoTo QH
+            End If
         Case Else
             #If ImplUseDebugLog Then
                 DebugLog MODULE_NAME, FUNC_NAME, "Unknown client message (" & .Data(.Pos) & ")"
@@ -904,7 +1038,7 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvHandlePointerEvent(uCtx As UcsCaptureContext, uEvent As UcsClientPointerEventType) As Boolean
+Private Function pvHandlePointerEvent(uCtx As UcsCaptureContext, uEvent As RfbClientPointerEvent) As Boolean
     Dim LNG_BUTTON1     As Long
     Const LNG_BUTTON2   As Long = 2 ^ 1
     Dim LNG_BUTTON3     As Long
@@ -922,28 +1056,180 @@ Private Function pvHandlePointerEvent(uCtx As UcsCaptureContext, uEvent As UcsCl
     End If
     With uEvent
         lFlags = MOUSEEVENTF_ABSOLUTE Or MOUSEEVENTF_MOVE
-        If (.ButtonMask And LNG_BUTTON1) <> (m_uClientPointer.ButtonMask And LNG_BUTTON1) Then
+        If (.ButtonMask And LNG_BUTTON1) <> (m_uClientPointerEvent.ButtonMask And LNG_BUTTON1) Then
             lFlags = lFlags Or IIf((.ButtonMask And LNG_BUTTON1) <> 0, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
         End If
-        If (.ButtonMask And LNG_BUTTON2) <> (m_uClientPointer.ButtonMask And LNG_BUTTON2) Then
+        If (.ButtonMask And LNG_BUTTON2) <> (m_uClientPointerEvent.ButtonMask And LNG_BUTTON2) Then
             lFlags = lFlags Or IIf((.ButtonMask And LNG_BUTTON2) <> 0, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP)
         End If
-        If (.ButtonMask And LNG_BUTTON3) <> (m_uClientPointer.ButtonMask And LNG_BUTTON3) Then
+        If (.ButtonMask And LNG_BUTTON3) <> (m_uClientPointerEvent.ButtonMask And LNG_BUTTON3) Then
             lFlags = lFlags Or IIf((.ButtonMask And LNG_BUTTON3) <> 0, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP)
         End If
-        If (.ButtonMask And LNG_BUTTON4) <> (m_uClientPointer.ButtonMask And LNG_BUTTON4) Then
+        If (.ButtonMask And LNG_BUTTON4) <> (m_uClientPointerEvent.ButtonMask And LNG_BUTTON4) Then
             lFlags = lFlags Or MOUSEEVENTF_WHEEL
             lWheel = 120
         End If
-        If (.ButtonMask And LNG_BUTTON5) <> (m_uClientPointer.ButtonMask And LNG_BUTTON5) Then
+        If (.ButtonMask And LNG_BUTTON5) <> (m_uClientPointerEvent.ButtonMask And LNG_BUTTON5) Then
             lFlags = lFlags Or MOUSEEVENTF_WHEEL
             lWheel = -120
         End If
         Call mouse_event(lFlags, .XPosition * 65535 \ (uCtx.Width - 1), .YPosition * 65535 \ (uCtx.Height - 1), lWheel, 0)
     End With
-    m_uClientPointer = uEvent
+    m_uClientPointerEvent = uEvent
     '--- success
     pvHandlePointerEvent = True
+End Function
+
+Private Function pvSendFileTransfer( _
+            uOutput As UcsBuffer, _
+            oSocket As cAsyncSocket, _
+            ByVal ContentType As RfbFileTransferContentEnum, _
+            ByVal ContentParam As RfbFileTransferContentEnum, _
+            Optional ByVal ContentSize As Long, _
+            Optional ByVal Ptr As Long, _
+            Optional ByVal Size As Long) As Boolean
+    Dim uFileTransfer   As RfbFileTransfer
+        
+    With uFileTransfer
+        .MessageType = rfbMsgFileTransfer
+        .ContentType = ContentType
+        .ContentParam = ContentParam
+        .Size = ContentSize
+        .Length = pvNetworkLong(Size)
+    End With
+    pvBufferWriteBlob uOutput, VarPtr(uFileTransfer), sizeof_RfbFileTransfer
+    pvBufferWriteBlob uOutput, Ptr, Size
+    '--- succees (or failure)
+    pvSendFileTransfer = pvBufferSendAsync(uOutput, oSocket)
+End Function
+
+Private Function pvSendFileTransferDirContent(uOutput As UcsBuffer, oSocket As cAsyncSocket, sFolder As String) As Boolean
+    Const FUNC_NAME     As String = "pvSendFileTransferDirContent"
+    Const offsetof_cFileName As Long = sizeof_WIN32_FIND_DATA - 2 * MAX_PATH - 2 * 14
+    Dim lMode           As Long
+    Dim hFind           As Long
+    Dim uData           As WIN32_FIND_DATA
+    Dim baData()        As Byte
+    Dim sFile           As String
+    
+    On Error GoTo EH
+    lMode = SetErrorMode(SEM_FAILCRITICALERRORS)
+    hFind = FindFirstFile(StrPtr(PathCombine(sFolder, "*.*")), VarPtr(uData))
+    Call SetErrorMode(lMode)
+    If hFind = INVALID_HANDLE_VALUE Then
+        If Not pvSendFileTransfer(uOutput, oSocket, rfbCntDirPacket, rfbAnsDirectory) Then
+            GoTo QH
+        End If
+    Else
+        baData = StrConv(sFolder, vbFromUnicode)
+        If Not pvSendFileTransfer(uOutput, oSocket, rfbCntDirPacket, rfbAnsDirectory, Ptr:=VarPtr(baData(0)), Size:=UBound(baData) + 1) Then
+            GoTo QH
+        End If
+        Do
+            sFile = Left$(uData.cFileName, InStr(uData.cFileName, Chr$(0)) - 1)
+            If sFile <> "." And sFile <> ".." Then
+                ReDim baData(0 To offsetof_cFileName + Len(sFile) - 1) As Byte
+                Call CopyMemory(baData(0), uData, offsetof_cFileName)
+                Call CopyMemory(baData(offsetof_cFileName), ByVal sFile, Len(sFile))
+                If Not pvSendFileTransfer(uOutput, oSocket, rfbCntDirPacket, rfbAnsDirectory, Ptr:=VarPtr(baData(0)), Size:=UBound(baData) + 1) Then
+                    GoTo QH
+                End If
+            End If
+        Loop While FindNextFile(hFind, VarPtr(uData)) <> 0
+        '--- end of transfer
+        If Not pvSendFileTransfer(m_uSendBuffer, m_oSocket, rfbCntDirPacket, 0) Then
+            GoTo QH
+        End If
+    End If
+    '--- success
+    pvSendFileTransferDirContent = True
+QH:
+    If hFind <> INVALID_HANDLE_VALUE And hFind <> 0 Then
+        Call FindClose(hFind)
+    End If
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+    Resume QH
+End Function
+
+Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte) As Boolean
+    Const FUNC_NAME     As String = "pvHandleFileTransfer"
+    Const LNG_FT_ENABLED As Long = 1
+'    Const LNG_FT_DISABLED As Long = -1
+    Dim baBuffer()      As Byte
+    Dim lSize           As Long
+    Dim lIdx            As Long
+    Dim sFolder         As String
+    
+    On Error GoTo EH
+    Select Case uMsg.ContentType
+    Case rfbCntDirContentRequest
+        Select Case uMsg.ContentParam
+        Case rfbCntReqDrivesList
+            DebugLog MODULE_NAME, FUNC_NAME, "rfbCntReqDrivesList"
+            ReDim baBuffer(0 To 255) As Byte
+            lSize = GetLogicalDriveStrings(UBound(baBuffer), baBuffer(0))
+            For lIdx = 0 To lSize - 3 Step 4
+                Select Case GetDriveType(baBuffer(lIdx))
+                Case DRIVE_REMOVABLE
+                    baBuffer(lIdx + 2) = 102    ' Asc("f")
+                Case DRIVE_FIXED
+                    baBuffer(lIdx + 2) = 108    ' Asc("l")
+                Case DRIVE_REMOTE
+                    baBuffer(lIdx + 2) = 110    ' Asc("n")
+                Case DRIVE_CDROM
+                    baBuffer(lIdx + 2) = 99     ' Asc("c")
+                End Select
+            Next
+            If Not pvSendFileTransfer(m_uSendBuffer, m_oSocket, rfbCntDirPacket, rfbAnsDrivesList, Ptr:=VarPtr(baBuffer(0)), Size:=lSize) Then
+                GoTo QH
+            End If
+        Case rfbCntReqDirContent
+            DebugLog MODULE_NAME, FUNC_NAME, "rfbCntReqDirContent"
+            sFolder = StrConv(baData, vbUnicode)
+            Select Case sFolder
+            Case "My Documents\"
+                sFolder = GetSpecialFolder(CSIDL_PERSONAL) & "\"
+            Case "Desktop\"
+                sFolder = GetSpecialFolder(CSIDL_DESKTOP) & "\"
+            Case "Network Favorites\"
+                sFolder = GetSpecialFolder(CSIDL_NETHOOD) & "\"
+            End Select
+            If Not pvSendFileTransferDirContent(m_uSendBuffer, m_oSocket, sFolder) Then
+                GoTo QH
+            End If
+        Case Else
+            #If ImplUseDebugLog Then
+                DebugLog MODULE_NAME, FUNC_NAME, "Unknown DirContentRequest content param (" & uMsg.ContentParam & ")"
+            #End If
+        End Select
+    Case rfbCntFileTransferRequest
+        DebugLog MODULE_NAME, FUNC_NAME, "rfbCntFileTransferRequest " & StrConv(baData, vbUnicode)
+    Case rfbCntAbortFileTransfer
+        DebugLog MODULE_NAME, FUNC_NAME, "rfbCntAbortFileTransfer"
+        If m_uFileBuffer.Size = 0 Then
+            If Not pvSendFileTransfer(m_uSendBuffer, m_oSocket, _
+                    IIf(uMsg.ContentParam = 0, rfbCntAbortFileTransfer, rfbCntFileTransferAccess), _
+                    uMsg.ContentParam, ContentSize:=LNG_FT_ENABLED) Then
+                GoTo QH
+            End If
+        End If
+    Case rfbCntFileTransferSessionStart
+        DebugLog MODULE_NAME, FUNC_NAME, "rfbCntFileTransferSessionStart"
+    Case rfbCntFileTransferSessionEnd
+        DebugLog MODULE_NAME, FUNC_NAME, "rfbCntFileTransferSessionEnd"
+    Case Else
+        #If ImplUseDebugLog Then
+            DebugLog MODULE_NAME, FUNC_NAME, "File transfer content type (" & uMsg.ContentType & ", " & uMsg.ContentParam & ")"
+        #End If
+    End Select
+    '--- success
+    pvHandleFileTransfer = True
+QH:
+    Exit Function
+EH:
+    PrintError FUNC_NAME
 End Function
 
 '= desktop duplication ===================================================
@@ -1252,8 +1538,8 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
     Dim baRedLut()      As Byte
     Dim baGreenLut()    As Byte
     Dim baBlueLut()     As Byte
-    Dim uUpdate         As UcsServerFramebufferUpdateType
-    Dim uRectangle      As UcsServerRectangleType
+    Dim uUpdate         As RfbServerFramebufferUpdate
+    Dim uRectangle      As RfbServerRectangle
     Dim lSrcIndex       As Long
     Dim lPtr            As Long
     Dim uTile           As UcsBuffer
@@ -1308,24 +1594,24 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     baBit(lIdx) = &H80 \ 2 ^ (lIdx Mod 8)
                 Next
                 With uUpdate
-                    .MessageType = ucsMsgFramebufferUpdate
+                    .MessageType = rfbMsgFramebufferUpdate
                     .NumberOfRectangles = pvNetworkShort(1)
                 End With
-                pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
+                pvBufferWriteBlob uOutput, VarPtr(uUpdate), sizeof_RfbServerFramebufferUpdate
                 With uRectangle
                     .XPosition = pvNetworkShort(uFrame.PointerInfo.HotSpot.X)
                     .YPosition = pvNetworkShort(uFrame.PointerInfo.HotSpot.Y)
                     .Width = pvNetworkShort(uFrame.PointerInfo.Width)
                     .Height = pvNetworkShort(uFrame.PointerInfo.Height)
                     If uFrame.PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And m_uClientEncodings.HasCursorWithAlpha Then
-                        .EncodingType = pvNetworkLong(ucsPsEncCursorWithAlpha)
+                        .EncodingType = pvNetworkLong(rfbPsEncCursorWithAlpha)
                     Else
-                        .EncodingType = pvNetworkLong(ucsPsEncCursor)
+                        .EncodingType = pvNetworkLong(rfbPsEncCursor)
                     End If
                 End With
-                pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
+                pvBufferWriteBlob uOutput, VarPtr(uRectangle), sizeof_RfbServerRectangle
                 If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And m_uClientEncodings.HasCursorWithAlpha Then
-                    pvBufferWriteLong uOutput, pvNetworkLong(ucsEncRaw), Size:=4
+                    pvBufferWriteLong uOutput, pvNetworkLong(rfbEncRaw), Size:=4
                     pvBufferWriteBlob uOutput, VarPtr(.PointerShape(0)), .PointerInfo.Height * .PointerInfo.Width * 4
                 ElseIf .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
                     Select Case lBytesPerPixel
@@ -1372,10 +1658,10 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
         End If
         lBufferSize = oSocket.SockOpt(ucsSsoSendBuffer)
         With uUpdate
-            .MessageType = ucsMsgFramebufferUpdate
+            .MessageType = rfbMsgFramebufferUpdate
             .NumberOfRectangles = pvNetworkShort(uFrame.NumMoveRects + uFrame.NumTiles)
         End With
-        pvBufferWriteBlob uOutput, VarPtr(uUpdate), UcsServerFramebufferUpdateSize
+        pvBufferWriteBlob uOutput, VarPtr(uUpdate), sizeof_RfbServerFramebufferUpdate
         For lIdx = 0 To .NumMoveRects - 1
             With .MoveRects(lIdx).DestinationRect
                 uRectangle.XPosition = pvNetworkShort(.Left)
@@ -1383,8 +1669,8 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                 uRectangle.Width = pvNetworkShort(.Right - .Left)
                 uRectangle.Height = pvNetworkShort(.Bottom - .Top)
             End With
-            uRectangle.EncodingType = pvNetworkLong(ucsEncCopyRect)
-            pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize
+            uRectangle.EncodingType = pvNetworkLong(rfbEncCopyRect)
+            pvBufferWriteBlob uOutput, VarPtr(uRectangle), sizeof_RfbServerRectangle
             pvBufferWriteLong uOutput, .MoveRects(lIdx).SourcePoint.X, Size:=2
             pvBufferWriteLong uOutput, .MoveRects(lIdx).SourcePoint.Y, Size:=2
         Next
@@ -1399,7 +1685,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
             uRectangle.Width = pvNetworkShort(.Tiles(lIdx).Width)
             uRectangle.Height = pvNetworkShort(.Tiles(lIdx).Height)
             '--- delay sending encoding
-            pvBufferWriteBlob uOutput, VarPtr(uRectangle), UcsServerRectangleSize - 4
+            pvBufferWriteBlob uOutput, VarPtr(uRectangle), sizeof_RfbServerRectangle - 4
             lPitch = (.DirtyRects(lSrcIndex).Right - .DirtyRects(lSrcIndex).Left) * 4
             lPtr = VarPtr(.DirtyBuffers(lSrcIndex).Data(0))
             uTile.Size = 0
@@ -1454,7 +1740,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     cTemp = lSize * 100 / (.Tiles(lIdx).Width * .Tiles(lIdx).Height * 4)
                     sDebugInfo = sDebugInfo & " JPG=" & Format$(cTemp, "0.00") & "%"
                 #End If
-                pvBufferWriteLong uOutput, ucsEncTight, Size:=4
+                pvBufferWriteLong uOutput, rfbEncTight, Size:=4
                 '--- compression control: &H90 = no reset, JpegCompression
                 pvBufferWriteLong uOutput, &H90
                 pvBufferWriteCompactLong uOutput, lSize
@@ -1493,7 +1779,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                 End Select
                 #If ImplZlib Then
                     If m_uClientEncodings.HasTight And m_uClientEncodings.CompressionLevel > 0 Then
-                        pvBufferWriteLong uOutput, ucsEncTight, Size:=4
+                        pvBufferWriteLong uOutput, rfbEncTight, Size:=4
                         lSize = uOutput.Size
                         '--- compression control: &H0 = no reset, use stream 0, no filter
                         pvBufferWriteLong uOutput, &H0
@@ -1503,14 +1789,14 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                             sDebugInfo = sDebugInfo & " ZLib=" & Format$(cTemp, "0.00") & "%"
                         #End If
                     ElseIf m_uClientEncodings.HasZlib Then
-                        pvBufferWriteLong uOutput, ucsEncZlib, Size:=4
+                        pvBufferWriteLong uOutput, rfbEncZlib, Size:=4
                         pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
                     Else
-                        pvBufferWriteLong uOutput, ucsEncRaw, Size:=4
+                        pvBufferWriteLong uOutput, rfbEncRaw, Size:=4
                         pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
                     End If
                 #Else
-                    pvBufferWriteLong uOutput, ucsEncRaw, Size:=4
+                    pvBufferWriteLong uOutput, rfbEncRaw, Size:=4
                     pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
                 #End If
             End If
@@ -1571,8 +1857,8 @@ Private Function pvCapturePrepareTiles(uFrame As UcsCaptureFrame) As Boolean
             lWidth = .Right - .Left
             lHeight = .Bottom - .Top
         End With
-        For lY = 0 To lHeight - 1 Step TILE_SIZE
-            For lX = 0 To lWidth - 1 Step TILE_SIZE
+        For lY = 0 To lHeight - 1 Step LNG_TILE_SIZE
+            For lX = 0 To lWidth - 1 Step LNG_TILE_SIZE
                 If uFrame.NumTiles > UBound(uFrame.Tiles) Then
                     ReDim Preserve uFrame.Tiles(0 To UBound(uFrame.Tiles) * 2 + 1) As UcsCaptureTile
                 End If
@@ -1580,8 +1866,8 @@ Private Function pvCapturePrepareTiles(uFrame As UcsCaptureFrame) As Boolean
                     .SrcIndex = lIdx
                     .Left = lX
                     .Top = lY
-                    .Width = Clamp(lX + TILE_SIZE, , lWidth) - lX
-                    .Height = Clamp(lY + TILE_SIZE, , lHeight) - lY
+                    .Width = Clamp(lX + LNG_TILE_SIZE, , lWidth) - lX
+                    .Height = Clamp(lY + LNG_TILE_SIZE, , lHeight) - lY
                 End With
                 uFrame.NumTiles = uFrame.NumTiles + 1
             Next
@@ -1608,14 +1894,14 @@ EH:
     PrintError FUNC_NAME
 End Sub
 
-Private Sub pvInitTightCapabilities(uCaps() As UcsTightCapabilityType, sInit As String)
+Private Sub pvInitTightCapabilities(uCaps() As RfbTightCapability, sInit As String)
     Dim vSplit          As Variant
     Dim vElem           As Variant
     Dim lIdx            As Long
     Dim sBuffer         As String
     
     vSplit = Split(sInit, "|")
-    ReDim uCaps(0 To UBound(vSplit)) As UcsTightCapabilityType
+    ReDim uCaps(0 To UBound(vSplit)) As RfbTightCapability
     For Each vElem In vSplit
         vElem = Split(vElem, ";")
         With uCaps(lIdx)
@@ -2018,6 +2304,18 @@ Private Function Clamp( _
     End Select
 End Function
 
+Private Function GetSpecialFolder(ByVal lType As Long) As String
+    GetSpecialFolder = String$(1000, 0)
+    If SHGetFolderPath(0, lType Or CSIDL_FLAG_CREATE, 0, 0, GetSpecialFolder) < 0 Then
+        Call SHGetFolderPath(0, lType, 0, 0, GetSpecialFolder)
+    End If
+    GetSpecialFolder = Left$(GetSpecialFolder, InStr(GetSpecialFolder, vbNullChar) - 1)
+End Function
+
+Private Function PathCombine(sPath As String, sFile As String) As String
+    PathCombine = sPath & IIf(LenB(sPath) <> 0 And Right$(sPath, 1) <> "\" And LenB(sFile) <> 0, "\", vbNullString) & sFile
+End Function
+
 'Private Function pvCalcAdler32(ByVal lPtr As Long, ByVal lSize As Long) As Long
 '    Const LNG_BASE      As Long = 65521
 '    Dim baData()        As Byte
@@ -2091,7 +2389,17 @@ EH:
 End Sub
 
 Private Sub m_oSocket_OnError(ByVal ErrorCode As Long, ByVal EventMask As UcsAsyncSocketEventMaskEnum)
+    Const FUNC_NAME     As String = "m_oSocket_OnError"
+    
+    On Error GoTo EH
+    #If ImplUseDebugLog Then
+        DebugLog MODULE_NAME, FUNC_NAME, m_oSocket.GetErrorDescription(ErrorCode) & " (" & ErrorCode & ")"
+    #End If
     Set m_pTimer = Nothing
+    pvParent.frCloseConnection Me
+    Exit Sub
+EH:
+    PrintError FUNC_NAME
 End Sub
 
 '=========================================================================
@@ -2217,4 +2525,3 @@ Private Sub Class_Terminate()
     End If
 End Sub
 #End If
-
