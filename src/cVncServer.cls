@@ -59,6 +59,7 @@ Private Const RDW_ERASENOW                  As Long = &H200
 '--- for IStream_Seek
 Private Const STREAM_SEEK_SET               As Long = 0
 Private Const STREAM_SEEK_CUR               As Long = 1
+Private Const STREAM_SEEK_END               As Long = 2
 '--- for CryptAcquireContext
 Private Const PROV_RSA_FULL                 As Long = 1
 Private Const CRYPT_VERIFYCONTEXT           As Long = &HF0000000
@@ -374,53 +375,58 @@ End Type
 Private Const sizeof_RfbFileTransfer As Long = 12
 
 Private Enum RfbFileTransferProtocolEnum
-    rfbFtpDirContentRequest = 1             ' Client asks for the content of a given Server directory
-    rfbFtpDirPacket = 2                     ' Full directory name or full file name. ' Null content means end of Directory
-    rfbFtpFileTransferRequest = 3           ' Client asks the server for the transfer of a given file
-    rfbFtpFileHeader = 4                    ' First packet of a file transfer, containing file's features
-    rfbFtpFilePacket = 5                    ' One chunk of the file
-    rfbFtpEndOfFile = 6                     ' End of file transfer (the file has been received or error)
-    rfbFtpAbortFileTransfer = 7             ' The file transfer must be aborted, whatever the state
-    rfbFtpFileTransferOffer = 8             ' The client offers to send a file to the server
-    rfbFtpFileAcceptHeader = 9              ' The server accepts or rejects the file
-    rfbFtpCommand = 10                      ' The Client sends a simple command (File Delete, Dir create etc...)
-    rfbFtpCommandReturn = 11                ' The Client receives the server's answer about a simple command
-    rfbFtpFileChecksums = 12                ' The zipped checksums of the destination file (Delta Transfer)
-    rfbFtpFileTransferAccess = 14           ' Request FileTransfer authorization
-    rfbFtpFileTransferSessionStart = 15     ' indicates a client has the FT gui open
-    rfbFtpFileTransferSessionEnd = 16       ' indicates a client has closed the ft gui.
-    rfbFtpFileTransferProtocolVersion = 17  ' indicates ft protocol version understood by sender. contentParam is version #
+    rfbFtpDirContentRequest = 1                 ' Client asks for the content of a given Server directory
+    rfbFtpDirPacket = 2                         ' Full directory name or full file name. ' Null content means end of Directory
+    rfbFtpFileTransferRequest = 3               ' Client asks the server for the transfer of a given file
+    rfbFtpFileHeader = 4                        ' First packet of a file transfer, containing file's features
+    rfbFtpFilePacket = 5                        ' One chunk of the file
+    rfbFtpEndOfFile = 6                         ' End of file transfer (the file has been received or error)
+    rfbFtpAbortFileTransfer = 7                 ' The file transfer must be aborted, whatever the state
+    rfbFtpFileTransferOffer = 8                 ' The client offers to send a file to the server
+    rfbFtpFileAcceptHeader = 9                  ' The server accepts or rejects the file
+    rfbFtpCommand = 10                          ' The Client sends a simple command (File Delete, Dir create etc...)
+    rfbFtpCommandReturn = 11                    ' The Client receives the server's answer about a simple command
+    rfbFtpFileChecksums = 12                    ' The zipped checksums of the destination file (Delta Transfer)
+    rfbFtpFileTransferAccess = 14               ' Request FileTransfer authorization
+    rfbFtpFileTransferSessionStart = 15         ' indicates a client has the FT gui open
+    rfbFtpFileTransferSessionEnd = 16           ' indicates a client has closed the ft gui.
+    rfbFtpFileTransferProtocolVersion = 17      ' indicates ft protocol version understood by sender. contentParam is version #
     
     ' Content params -- rfbFtpDirContentRequest client Request
-    rfbFtpRDirContent = 1                    ' Request a Server Directory contents
-    rfbFtpRDrivesList = 2                    ' Request the server's drives list
-    rfbFtpRDirRecursiveList = 3              ' Request a server directory content recursive sorted list
-    rfbFtpRDirRecursiveSize = 4              ' Request a server directory content recursive size
+    rfbFtpRDirContent = 1                       ' Request a Server Directory contents
+    rfbFtpRDrivesList = 2                       ' Request the server's drives list
+    rfbFtpRDirRecursiveList = 3                 ' Request a server directory content recursive sorted list
+    rfbFtpRDirRecursiveSize = 4                 ' Request a server directory content recursive size
     
     ' Content params -- rfbFtpDirPacket & rfbFtpCommandReturn server Answer
-    rfbFtpADirectory = 1                     ' Reception of a directory name
-    rfbFtpAFile = 2                          ' Reception of a file name
-    rfbFtpADrivesList = 3                    ' Reception of a list of drives
-    rfbFtpADirCreate = 4                     ' Response to a create dir command
-    rfbFtpADirDelete = 5                     ' Response to a delete dir command
-    rfbFtpAFileCreate = 6                    ' Response to a create file command
-    rfbFtpAFileDelete = 7                    ' Response to a delete file command
-    rfbFtpAFileRename = 8                    ' Response to a rename file command
-    rfbFtpADirRename = 9                     ' Response to a rename dir command
+    rfbFtpADirectory = 1                        ' Reception of a directory name
+    rfbFtpAFile = 2                             ' Reception of a file name
+    rfbFtpADrivesList = 3                       ' Reception of a list of drives
+    rfbFtpADirCreate = 4                        ' Response to a create dir command
+    rfbFtpADirDelete = 5                        ' Response to a delete dir command
+    rfbFtpAFileCreate = 6                       ' Response to a create file command
+    rfbFtpAFileDelete = 7                       ' Response to a delete file command
+    rfbFtpAFileRename = 8                       ' Response to a rename file command
+    rfbFtpADirRename = 9                        ' Response to a rename dir command
     rfbFtpADirRecursiveListItem = 10
     rfbFtpADirRecursiveSize = 11
     
     ' Content params -- rfbFtpCommand Command
-    rfbFtpCDirCreate = 1                     ' Request the server to create the given directory
-    rfbFtpCDirDelete = 2                     ' Request the server to delete the given directory
-    rfbFtpCFileCreate = 3                    ' Request the server to create the given file
-    rfbFtpCFileDelete = 4                    ' Request the server to delete the given file
-    rfbFtpCFileRename = 5                    ' Request the server to rename the given file
-    rfbFtpCDirRename = 6                     ' Request the server to rename the given directory
+    rfbFtpCDirCreate = 1                        ' Request the server to create the given directory
+    rfbFtpCDirDelete = 2                        ' Request the server to delete the given directory
+    rfbFtpCFileCreate = 3                       ' Request the server to create the given file
+    rfbFtpCFileDelete = 4                       ' Request the server to delete the given file
+    rfbFtpCFileRename = 5                       ' Request the server to rename the given file
+    rfbFtpCDirRename = 6                        ' Request the server to rename the given directory
     
     ' Errors -- content params or "size" field
-    rfbFtpSErrorUnknownCmd = 1               ' Unknown FileTransfer command.
-    rfbFtpSErrorCmd = -1                     ' Error when a command fails on remote side (ret in "size" field)
+    rfbFtpSErrorUnknownCmd = 1                  ' Unknown FileTransfer command.
+    rfbFtpSErrorCmd = -1                        ' Error when a command fails on remote side (ret in "size" field)
+    rfbFtpSProtocolEnabled = 1                  ' for rfbFtpAbortFileTransfer
+    rfbFtpSProtocolDisabled = -1
+    rfbFtpSPacketUncompressed = 0               ' for rfbFtpFilePacket
+    rfbFtpSPacketCompressed = 1
+    rfbFtpSPacketChecksumMatch = 2
 End Enum
 
 Private Type RfbTightInteractionCapabilities
@@ -475,7 +481,6 @@ Private WithEvents m_oSocket    As cAsyncSocket
 Attribute m_oSocket.VB_VarHelpID = -1
 Private m_uRecvBuffer           As UcsBuffer
 Private m_uSendBuffer(0 To [_ucsChaMax] - 1) As UcsBuffer
-Private m_eSendChannel          As UcsSendChannelEnum
 Private m_eSecurityType         As RfbSecurityTypeEnum
 Private m_baSecurityChallenge() As Byte
 Private m_uClientPixelFormat    As RfbClientSetPixelFormat
@@ -496,7 +501,7 @@ Private m_aWicFormatJpeg()      As Long
 Private m_aWicFormatPng()       As Long
 Private m_aWicFormat32bppPBGRA() As Long
 Private m_pImageStream          As stdole.IUnknown
-Private m_uFileBuffer           As UcsBuffer
+Private m_pFtpSendStream         As stdole.IUnknown
 
 Private Type UcsBuffer
     Data()              As Byte
@@ -573,6 +578,18 @@ End Property
 
 Private Property Get pvParent() As cVncServer
     Call vbaObjSetAddref(pvParent, m_lParentWeakRef)
+End Property
+
+Private Property Get pvFirstPendingChannel() As UcsSendChannelEnum
+    Dim eChannel        As UcsSendChannelEnum
+    
+    pvFirstPendingChannel = -1
+    For eChannel = 0 To [_ucsChaMax] - 1
+        If m_uSendBuffer(eChannel).Size > m_uSendBuffer(eChannel).Pos Then
+            pvFirstPendingChannel = eChannel
+            Exit For
+        End If
+    Next
 End Property
 
 '=========================================================================
@@ -1101,6 +1118,7 @@ Private Function pvSendFileTransfer( _
             ByVal ContentType As RfbFileTransferProtocolEnum, _
             ByVal ContentParam As RfbFileTransferProtocolEnum, _
             Optional ByVal ContentSize As Long, _
+            Optional ByVal HighContentSize As Variant, _
             Optional ByVal Ptr As Long, _
             Optional ByVal Size As Long, _
             Optional ByVal DelaySend As Boolean) As Boolean
@@ -1110,11 +1128,14 @@ Private Function pvSendFileTransfer( _
         .MessageType = rfbMsgFileTransfer
         .ContentType = ContentType
         .ContentParam = ContentParam
-        .Size = ContentSize
+        .Size = pvNetworkLong(ContentSize)
         .Length = pvNetworkLong(Size)
     End With
     pvBufferWriteBlob uOutput, VarPtr(uFileTransfer), sizeof_RfbFileTransfer
     pvBufferWriteBlob uOutput, Ptr, Size
+    If Not IsMissing(HighContentSize) Then
+        pvBufferWriteLong uOutput, HighContentSize, Size:=4
+    End If
     If DelaySend Then
         '--- success
         pvSendFileTransfer = True
@@ -1155,7 +1176,7 @@ Private Function pvSendFileTransferDirContent(uOutput As UcsBuffer, sFolder As S
                 ReDim baData(0 To offsetof_cFileName + Len(sFile) - 1) As Byte
                 Call CopyMemory(baData(0), uData, offsetof_cFileName)
                 Call CopyMemory(baData(offsetof_cFileName), ByVal sFile, Len(sFile))
-                If uOutput.Size - uOutput.Pos > lBufferSize Then
+                If uOutput.Size > uOutput.Pos + lBufferSize Then
                     bDelaySend = m_oSocket.HasPendingEvent
                 Else
                     bDelaySend = True
@@ -1182,22 +1203,95 @@ EH:
     Resume QH
 End Function
 
+Private Function pvSendFileTransferFileHeader(uOutput As UcsBuffer, sFile As String, pStream As stdole.IUnknown) As Boolean
+    Const FUNC_NAME     As String = "pvSendFileTransferFileHeader"
+    Const FORMAT_FILEDATETIME As String = "mm\/dd\/yyyy hh:nn"
+    Dim cSize           As Currency
+    Dim uSize           As LARGE_INTEGER
+    Dim baBuffer()      As Byte
+    
+    On Error GoTo EH
+    If pvCheckHResult(SHCreateStreamOnFile(StrPtr(sFile), STGM_READ, pStream)) < 0 Then
+        Set pStream = Nothing
+        cSize = -1
+    ElseIf pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_END, cSize)) < 0 Then
+        Set pStream = Nothing
+        cSize = -1
+    ElseIf pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_SET)) < 0 Then
+        Set pStream = Nothing
+        cSize = -1
+    Else
+        sFile = sFile & "," & Format$(FileDateTime(sFile), FORMAT_FILEDATETIME)
+    End If
+    Call CopyMemory(uSize, cSize, 8)
+    baBuffer = StrConv(sFile, vbFromUnicode)
+    If Not pvSendFileTransfer(uOutput, rfbFtpFileHeader, 0, _
+            ContentSize:=uSize.LowPart, HighContentSize:=uSize.HighPart, _
+            Ptr:=VarPtr(baBuffer(0)), Size:=UBound(baBuffer) + 1, DelaySend:=True) Then
+        GoTo QH
+    End If
+    '--- success
+    pvSendFileTransferFileHeader = True
+QH:
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+End Function
+
+Private Function pvSendFileTransferFileContent(uOutput As UcsBuffer, pStream As stdole.IUnknown) As Boolean
+    Const FUNC_NAME     As String = "pvSendFileTransferFileContent"
+    Const LNK_CHUNK_SIZE As Long = 8192
+    Dim baBuffer()      As Byte
+    Dim lBufferSize     As Long
+    Dim lRead           As Long
+    Dim cPos            As Currency
+    
+    On Error GoTo EH
+    lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
+    ReDim baBuffer(0 To LNK_CHUNK_SIZE - 1) As Byte
+    Do While Not m_oSocket.HasPendingEvent
+        If pvCheckHResult(IStream_Read(pStream, VarPtr(baBuffer(0)), UBound(baBuffer) + 1, lRead)) < 0 Then
+            If Not pvSendFileTransfer(uOutput, rfbFtpAbortFileTransfer, 0) Then
+                GoTo QH
+            End If
+            Set pStream = Nothing
+            Exit Do
+        End If
+        If lRead = 0 Then
+            If Not pvSendFileTransfer(uOutput, rfbFtpEndOfFile, 0) Then
+                GoTo QH
+            End If
+            Set pStream = Nothing
+            Exit Do
+        End If
+        If Not pvSendFileTransfer(uOutput, rfbFtpFilePacket, 0, ContentSize:=rfbFtpSPacketUncompressed, _
+                Ptr:=VarPtr(baBuffer(0)), Size:=lRead) Then
+            GoTo QH
+        End If
+    Loop
+    IStream_Seek pStream, 0, STREAM_SEEK_CUR, cPos
+    Debug.Print cPos * 10000, Timer
+    '--- success
+    pvSendFileTransferFileContent = True
+QH:
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+End Function
+
 Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte) As Boolean
     Const FUNC_NAME     As String = "pvHandleFileTransfer"
-    Const LNG_FT_ENABLED As Long = 1
-'    Const LNG_FT_DISABLED As Long = -1
     Dim baBuffer()      As Byte
     Dim lSize           As Long
     Dim lIdx            As Long
-    Dim sFolder         As String
+    Dim sPath           As String
     
     On Error GoTo EH
     Select Case uMsg.ContentType
     Case rfbFtpDirContentRequest
         Select Case uMsg.ContentParam
         Case rfbFtpRDrivesList
-            DebugLog MODULE_NAME, FUNC_NAME, "rfbFtpRDrivesList"
-            ReDim baBuffer(0 To 255) As Byte
+            ReDim baBuffer(0 To 256) As Byte
             lSize = GetLogicalDriveStrings(UBound(baBuffer), baBuffer(0))
             For lIdx = 0 To lSize - 3 Step 4
                 Select Case GetDriveType(baBuffer(lIdx))
@@ -1215,17 +1309,18 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
                 GoTo QH
             End If
         Case rfbFtpRDirContent
-            DebugLog MODULE_NAME, FUNC_NAME, "rfbFtpRDirContent"
-            sFolder = StrConv(baData, vbUnicode)
-            Select Case sFolder
+            If UBound(baData) >= 0 Then
+                sPath = StrConv(baData, vbUnicode)
+            End If
+            Select Case sPath
             Case "My Documents\"
-                sFolder = GetSpecialFolder(CSIDL_PERSONAL) & "\"
+                sPath = GetSpecialFolder(CSIDL_PERSONAL) & "\"
             Case "Desktop\"
-                sFolder = GetSpecialFolder(CSIDL_DESKTOP) & "\"
+                sPath = GetSpecialFolder(CSIDL_DESKTOP) & "\"
             Case "Network Favorites\"
-                sFolder = GetSpecialFolder(CSIDL_NETHOOD) & "\"
+                sPath = GetSpecialFolder(CSIDL_NETHOOD) & "\"
             End Select
-            If Not pvSendFileTransferDirContent(m_uSendBuffer(ucsChaFtp), sFolder) Then
+            If Not pvSendFileTransferDirContent(m_uSendBuffer(ucsChaFtp), sPath) Then
                 GoTo QH
             End If
         Case Else
@@ -1234,19 +1329,25 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
             #End If
         End Select
     Case rfbFtpFileTransferRequest
-        DebugLog MODULE_NAME, FUNC_NAME, "rfbFtpFileTransferRequest " & StrConv(baData, vbUnicode)
+        If UBound(baData) > 0 Then
+            sPath = StrConv(baData, vbUnicode)
+        End If
+        If Not pvSendFileTransferFileHeader(m_uSendBuffer(ucsChaFtp), sPath, m_pFtpSendStream) Then
+            GoTo QH
+        End If
+    Case rfbFtpFileHeader
+'        DebugLog MODULE_NAME, FUNC_NAME, "rfbFtpFileHeader " & StrConv(CStr(baData), vbUnicode) & ", uMsg.Size=" & uMsg.Size
     Case rfbFtpAbortFileTransfer
-        DebugLog MODULE_NAME, FUNC_NAME, "rfbFtpAbortFileTransfer"
-        If m_uFileBuffer.Size = 0 Then
+        If m_pFtpSendStream Is Nothing Then
             If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), IIf(uMsg.ContentParam = 0, rfbFtpAbortFileTransfer, rfbFtpFileTransferAccess), _
-                    uMsg.ContentParam, ContentSize:=LNG_FT_ENABLED) Then
+                    uMsg.ContentParam, ContentSize:=rfbFtpSProtocolEnabled) Then
                 GoTo QH
             End If
         End If
     Case rfbFtpFileTransferSessionStart
-        DebugLog MODULE_NAME, FUNC_NAME, "rfbFtpFileTransferSessionStart"
+'        DebugLog MODULE_NAME, FUNC_NAME, "rfbFtpFileTransferSessionStart"
     Case rfbFtpFileTransferSessionEnd
-        DebugLog MODULE_NAME, FUNC_NAME, "rfbFtpFileTransferSessionEnd"
+'        DebugLog MODULE_NAME, FUNC_NAME, "rfbFtpFileTransferSessionEnd"
     Case Else
         #If ImplUseDebugLog Then
             DebugLog MODULE_NAME, FUNC_NAME, "File transfer content type (" & uMsg.ContentType & ", " & uMsg.ContentParam & ")"
@@ -1265,19 +1366,30 @@ End Function
 Public Function TimerProc() As Long
 Attribute TimerProc.VB_MemberFlags = "40"
     Const FUNC_NAME     As String = "TimerProc"
+    Dim eChannel        As UcsSendChannelEnum
     
     On Error GoTo EH
     Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
-    If m_uSendBuffer(ucsChaFrame).Size > 0 Then
-        If Not m_oSocket.HasPendingEvent Then
-            m_oSocket_OnSend
-        End If
-    ElseIf m_uCaptureFrame.NumTiles + m_uCaptureFrame.NumMoveRects = 0 Then
-        If Not pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
+    eChannel = pvFirstPendingChannel
+    If eChannel >= 0 Then
+        If Not pvBufferSendAsync(m_uSendBuffer(eChannel)) Then
             GoTo QH
         End If
-        If Not pvCaptureSend(m_uCaptureCtx, m_uCaptureFrame, m_uSendBuffer(ucsChaFrame)) Then
-            GoTo QH
+    Else
+        If m_uCaptureFrame.NumTiles + m_uCaptureFrame.NumMoveRects = 0 Then
+            If Not pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
+                GoTo QH
+            End If
+            If Not pvCaptureSend(m_uCaptureCtx, m_uCaptureFrame, m_uSendBuffer(ucsChaFrame)) Then
+                GoTo QH
+            End If
+        End If
+        If Not m_pFtpSendStream Is Nothing Then
+            If m_uSendBuffer(ucsChaFrame).Size <= m_uSendBuffer(ucsChaFrame).Pos Then
+                If Not pvSendFileTransferFileContent(m_uSendBuffer(ucsChaFtp), m_pFtpSendStream) Then
+                    GoTo QH
+                End If
+            End If
         End If
     End If
 QH:
@@ -1833,7 +1945,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     Form1.labDebug(lIdx).Caption = sDebugInfo
                 End If
             #End If
-            If uOutput.Size >= uOutput.Pos + lBufferSize Then
+            If uOutput.Size > uOutput.Pos + lBufferSize Then
                 If Not m_oSocket.HasPendingEvent Then
                     If Not pvBufferSendAsync(uOutput) Then
                         GoTo QH
@@ -1859,8 +1971,10 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
         #End If
         .NumTiles = 0
     End With
-    If uOutput.Size = 0 Then
-        GoTo QH
+    If Not m_oSocket.HasPendingEvent Then
+        If Not pvBufferSendAsync(uOutput) Then
+            GoTo QH
+        End If
     End If
     '--- success
     pvCaptureSend = True
@@ -2190,7 +2304,7 @@ Private Function pvBufferSendAsync(uOutput As UcsBuffer) As Boolean
             Exit For
         End If
     Next
-    If eChannel = m_eSendChannel Then
+    If eChannel = pvFirstPendingChannel Then
         lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
         Do While uOutput.Pos < uOutput.Size
             lBytes = IIf(uOutput.Size - uOutput.Pos > lBufferSize, lBufferSize, uOutput.Size - uOutput.Pos)
@@ -2406,20 +2520,15 @@ End Sub
 
 Private Sub m_oSocket_OnSend()
     Const FUNC_NAME     As String = "m_oSocket_OnSend"
-    Dim lIdx            As Long
+    Dim eChannel        As UcsSendChannelEnum
     
     On Error GoTo EH
-    For lIdx = 0 To [_ucsChaMax] - 1
-        If m_uSendBuffer(m_eSendChannel).Size > m_uSendBuffer(m_eSendChannel).Pos Then
-            If Not pvBufferSendAsync(m_uSendBuffer(m_eSendChannel)) Then
-                GoTo QH
-            End If
-            If m_uSendBuffer(m_eSendChannel).Size > m_uSendBuffer(m_eSendChannel).Pos Then
-                Exit For
-            End If
+    eChannel = pvFirstPendingChannel
+    If eChannel >= 0 Then
+        If Not pvBufferSendAsync(m_uSendBuffer(eChannel)) Then
+            GoTo QH
         End If
-        m_eSendChannel = (m_eSendChannel + 1) Mod [_ucsChaMax]
-    Next
+    End If
 QH:
     Exit Sub
 EH:
