@@ -63,7 +63,7 @@ Private Sub Form_Load()
     Next
     
     Set m_oServer = New cVncServer
-    If Not m_oServer.Init("0.0.0.0", 5900, DEF_PASSWORD) Then
+    If Not m_oServer.Init("0.0.0.0", 5900) Then ' , DEF_PASSWORD) Then
         MsgBox m_oServer.LastError, vbExclamation
         Unload Me
     Else

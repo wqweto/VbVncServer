@@ -29,6 +29,7 @@ Private Const MODULE_NAME As String = "cVncServer"
 #Const ImplHistograms = (VNC_NOHISTOGRAMS = 0)
 #Const ImplNoIdeProtection = (MST_NO_IDE_PROTECTION <> 0)
 #Const ImplUseDebugLog = (USE_DEBUG_LOG <> 0)
+#Const ImplUseShared = (VNC_USESHARED <> 0)
 
 '=========================================================================
 ' API
@@ -104,11 +105,13 @@ Private Declare Function FindFirstFile Lib "kernel32" Alias "FindFirstFileW" (By
 Private Declare Function FindNextFile Lib "kernel32" Alias "FindNextFileW" (ByVal hFindFile As Long, ByVal lpFindFileData As Long) As Long
 Private Declare Function FindClose Lib "kernel32" (ByVal hFindFile As Long) As Long
 Private Declare Function SetErrorMode Lib "kernel32" (ByVal wMode As Long) As Long
-Private Declare Function GetTimeZoneInformation Lib "kernel32" (lpTimeZoneInformation As Any) As Long
-Private Declare Function ApiDeleteFile Lib "kernel32" Alias "DeleteFileA" (ByVal lpFileName As String) As Long
-Private Declare Function ApiRemoveDirectory Lib "kernel32" Alias "RemoveDirectoryA" (ByVal lpPathName As String) As Long
-Private Declare Function ApiCreateDirectory Lib "kernel32" Alias "CreateDirectoryA" (ByVal lpPathName As String, ByVal lpSecurityAttributes As Long) As Long
-Private Declare Function ApiMoveFileEx Lib "kernel32" Alias "MoveFileExA" (ByVal lpExistingFileName As String, ByVal lpNewFileName As String, ByVal dwFlags As Long) As Long
+Private Declare Function DeleteFile Lib "kernel32" Alias "DeleteFileW" (ByVal lpFileName As Long) As Long
+Private Declare Function RemoveDirectory Lib "kernel32" Alias "RemoveDirectoryW" (ByVal lpPathName As Long) As Long
+Private Declare Function CreateDirectory Lib "kernel32" Alias "CreateDirectoryW" (ByVal lpPathName As Long, ByVal lpSecurityAttributes As Long) As Long
+Private Declare Function MoveFileEx Lib "kernel32" Alias "MoveFileExW" (ByVal lpExistingFileName As Long, ByVal lpNewFileName As Long, ByVal dwFlags As Long) As Long
+Private Declare Function FileTimeToSystemTime Lib "kernel32" (lpFileTime As Any, lpSystemTime As Any) As Long
+Private Declare Function SystemTimeToVariantTime Lib "oleaut32" (lpSystemTime As Any, pvTime As Date) As Long
+Private Declare Function GetFileAttributes Lib "kernel32" Alias "GetFileAttributesW" (ByVal lpFileName As Long) As Long
 '--- user32/gdi32
 Private Declare Sub mouse_event Lib "user32" (ByVal dwFlags As Long, ByVal dx As Long, ByVal dy As Long, ByVal cButtons As Long, ByVal dwExtraInfo As Long)
 Private Declare Function GetSystemMetrics Lib "user32" (ByVal nIndex As Long) As Long
@@ -123,7 +126,7 @@ Private Declare Sub CoTaskMemFree Lib "ole32" (ByVal pv As Long)
 Private Declare Function DispCallFunc Lib "oleaut32" (ByVal pvInstance As Long, ByVal oVft As Long, ByVal lCc As Long, ByVal vtReturn As VbVarType, ByVal cActuals As Long, prgVt As Any, prgpVarg As Any, pvargResult As Variant) As Long
 Private Declare Function SHCreateMemStream Lib "shlwapi" Alias "#12" (pInit As Any, ByVal cbInit As Long) As stdole.IUnknown
 Private Declare Function SHCreateStreamOnFile Lib "shlwapi" Alias "SHCreateStreamOnFileW" (ByVal pszFile As Long, ByVal grfMode As Long, ppstm As IUnknown) As Long
-Private Declare Function SHGetFolderPath Lib "shfolder" Alias "SHGetFolderPathA" (ByVal hWnd As Long, ByVal csidl As Long, ByVal hToken As Long, ByVal dwFlags As Long, ByVal szPath As String) As Long
+Private Declare Function SHGetFolderPath Lib "shfolder" Alias "SHGetFolderPathW" (ByVal hWnd As Long, ByVal csidl As Long, ByVal hToken As Long, ByVal dwFlags As Long, ByVal szPath As Long) As Long
 '--- msvbvm60
 Private Declare Function ArrPtr Lib "msvbvm60" Alias "VarPtr" (Ptr() As Any) As Long
 Private Declare Function vbaObjSetAddref Lib "msvbvm60" Alias "__vbaObjSetAddref" (oDest As Any, ByVal lSrcPtr As Long) As Long
@@ -152,18 +155,20 @@ Private Declare Function IWICBitmapFrameEncode_SetSize_Proxy Lib "windowscodecs"
 Private Declare Function IWICBitmapFrameEncode_WriteSource_Proxy Lib "windowscodecs" (ByVal pIFrameEncode As stdole.IUnknown, ByVal pIBitmapSource As stdole.IUnknown, pWicRect As Any) As Long
 Private Declare Function IWICBitmapFrameEncode_Commit_Proxy Lib "windowscodecs" (ByVal pIFrameEncode As stdole.IUnknown) As Long
 Private Declare Function IPropertyBag2_Write_Proxy Lib "windowscodecs" (ByVal pPropBag As stdole.IUnknown, ByVal cProperties As Long, pBag As Any, pvarValue As Variant) As Long
-'--- for thunks
-Private Declare Function VirtualAlloc Lib "kernel32" (ByVal lpAddress As Long, ByVal dwSize As Long, ByVal flAllocationType As Long, ByVal flProtect As Long) As Long
-Private Declare Function CallWindowProc Lib "user32" Alias "CallWindowProcA" (ByVal lpPrevWndFunc As Long, ByVal hWnd As Long, ByVal Msg As Long, ByVal wParam As Long, ByVal lParam As Long) As Long
-Private Declare Function GetModuleHandle Lib "kernel32" Alias "GetModuleHandleA" (ByVal lpModuleName As String) As Long
-Private Declare Function GetProcAddress Lib "kernel32" (ByVal hModule As Long, ByVal lpProcName As String) As Long
-Private Declare Function GetCurrentProcessId Lib "kernel32" () As Long
-#If Not ImplNoIdeProtection Then
-    Private Declare Function FindWindowEx Lib "user32" Alias "FindWindowExA" (ByVal hWndParent As Long, ByVal hWndChildAfter As Long, ByVal lpszClass As String, ByVal lpszWindow As String) As Long
-    Private Declare Function GetWindowThreadProcessId Lib "user32" (ByVal hWnd As Long, lpdwProcessId As Long) As Long
+#If Not ImplUseShared Then
+    '--- for thunks
+    Private Declare Function VirtualAlloc Lib "kernel32" (ByVal lpAddress As Long, ByVal dwSize As Long, ByVal flAllocationType As Long, ByVal flProtect As Long) As Long
+    Private Declare Function CallWindowProc Lib "user32" Alias "CallWindowProcA" (ByVal lpPrevWndFunc As Long, ByVal hWnd As Long, ByVal Msg As Long, ByVal wParam As Long, ByVal lParam As Long) As Long
+    Private Declare Function GetModuleHandle Lib "kernel32" Alias "GetModuleHandleA" (ByVal lpModuleName As String) As Long
+    Private Declare Function GetProcAddress Lib "kernel32" (ByVal hModule As Long, ByVal lpProcName As String) As Long
+    Private Declare Function GetCurrentProcessId Lib "kernel32" () As Long
+    #If Not ImplNoIdeProtection Then
+        Private Declare Function FindWindowEx Lib "user32" Alias "FindWindowExA" (ByVal hWndParent As Long, ByVal hWndChildAfter As Long, ByVal lpszClass As String, ByVal lpszWindow As String) As Long
+        Private Declare Function GetWindowThreadProcessId Lib "user32" (ByVal hWnd As Long, lpdwProcessId As Long) As Long
+    #End If
+    Private Declare Function GetEnvironmentVariable Lib "kernel32" Alias "GetEnvironmentVariableA" (ByVal lpName As String, ByVal lpBuffer As String, ByVal nSize As Long) As Long
+    Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnvironmentVariableA" (ByVal lpName As String, ByVal lpValue As String) As Long
 #End If
-Private Declare Function GetEnvironmentVariable Lib "kernel32" Alias "GetEnvironmentVariableA" (ByVal lpName As String, ByVal lpBuffer As String, ByVal nSize As Long) As Long
-Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnvironmentVariableA" (ByVal lpName As String, ByVal lpValue As String) As Long
 
 Private Type BLOBHEADER
     bType               As Byte
@@ -478,6 +483,10 @@ Private Const STR_TIGHT_SERVER_MSGS As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_
 Private Const STR_TIGHT_CLIENT_MSGS As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
 Private Const STR_TIGHT_ENCODINGS   As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-32;TGHT;JPEGQLVL|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR|-256;TGHT;COMPRLVL"
 Private Const STR_TIGHT_AUTH_TYPES  As String = "2;STDV;VNCAUTH_"
+Private Const STR_DIR_PREFIX        As String = "!UVNCDIR-"
+Private Const sizeof_DIR_PREFIX     As Long = 9
+Private Const STR_ZIP_SUFFIX        As String = ".zip"
+Private Const sizeof_ZIP_SUFFIX     As Long = 4
 Private Const LNG_TILE_SIZE         As Long = 256
 
 Private m_cConnections          As Collection
@@ -512,6 +521,8 @@ Private m_pImageStream          As stdole.IUnknown
 Private m_bFtpSendRunning       As Boolean
 Private m_pFtpSendStream        As stdole.IUnknown
 Private m_pFtpSendChecksums     As stdole.IUnknown
+Private m_sFtpSendArchiveFile   As String
+Private m_sFtpRecvFileName      As String
 Private m_pFtpRecvStream        As stdole.IUnknown
 
 Private Type UcsBuffer
@@ -1194,7 +1205,7 @@ Private Function pvSendFileTransferDirContent(uOutput As UcsBuffer, sFolder As S
     Else
         lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
         baData = StrConv(sFolder, vbFromUnicode)
-        If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory, Ptr:=VarPtr(baData(0)), Size:=UBound(baData) + 1) Then
+        If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory, Ptr:=pvArrayPtr(baData), Size:=pvArraySize(baData)) Then
             GoTo QH
         End If
         Do
@@ -1208,7 +1219,7 @@ Private Function pvSendFileTransferDirContent(uOutput As UcsBuffer, sFolder As S
                 Else
                     bDelaySend = True
                 End If
-                If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory, Ptr:=VarPtr(baData(0)), Size:=UBound(baData) + 1, DelaySend:=bDelaySend) Then
+                If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory, Ptr:=pvArrayPtr(baData), Size:=pvArraySize(baData), DelaySend:=bDelaySend) Then
                     GoTo QH
                 End If
             End If
@@ -1230,34 +1241,49 @@ EH:
     Resume QH
 End Function
 
-Private Function pvSendFileTransferFileHeader(uOutput As UcsBuffer, sFile As String, pStream As stdole.IUnknown) As Boolean
+Private Function pvSendFileTransferFileHeader(uOutput As UcsBuffer, sFile As String, pStream As stdole.IUnknown, sArchiveFile As String) As Boolean
     Const FUNC_NAME     As String = "pvSendFileTransferFileHeader"
     Const FORMAT_FILEDATETIME As String = "mm\/dd\/yyyy hh:nn"
+    Const CSIZE_ERROR   As Currency = -0.0001
     Dim cSize           As Currency
     Dim uSize           As LARGE_INTEGER
     Dim baBuffer()      As Byte
-    Dim aInfo(0 To 42)  As Long
+    Dim sPath           As String
     
     On Error GoTo EH
-    If pvCheckHResult(SHCreateStreamOnFile(StrPtr(sFile), STGM_READ, pStream)) < 0 Then
-        Set pStream = Nothing
-        cSize = -1
+    Set pStream = Nothing
+    sArchiveFile = vbNullString
+    #If ImplZlib Then
+        If GetFileAttributes(StrPtr(sFile)) = -1 Then
+            sPath = Mid$(sFile, InStrRev(sFile, "\") + 1)
+            If Left(sPath, 2) = "[ " And Right$(sPath, 2) = " ]" Then
+                sArchiveFile = Left$(sFile, Len(sFile) - Len(sPath)) & STR_DIR_PREFIX & Mid$(sPath, 3, Len(sPath) - 4) & STR_ZIP_SUFFIX
+                sPath = Left$(sFile, Len(sFile) - Len(sPath)) & Mid$(sPath, 3, Len(sPath) - 4)
+                If (GetFileAttributes(StrPtr(sPath)) And vbDirectory + vbVolume) = vbDirectory Then
+                    With New cZipArchive
+                        .AddFromFolder PathCombine(sPath, "*.*"), Recursive:=True, IncludeEmptyFolders:=True
+                        If .CompressArchive(sArchiveFile) Then
+                            sFile = sArchiveFile
+                        End If
+                    End With
+                End If
+            End If
+        End If
+    #End If
+    If SHCreateStreamOnFile(StrPtr(sFile), STGM_READ, pStream) < 0 Then
+        cSize = CSIZE_ERROR
     ElseIf pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_END, cSize)) < 0 Then
-        Set pStream = Nothing
-        cSize = -1
+        cSize = CSIZE_ERROR
     ElseIf pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_SET)) < 0 Then
-        Set pStream = Nothing
-        cSize = -1
+        cSize = CSIZE_ERROR
     Else
-        '--- convert last modified date/time to GMT
-        Call GetTimeZoneInformation(aInfo(0))
-        sFile = sFile & "," & Format$(DateAdd("n", aInfo(0), FileDateTime(sFile)), FORMAT_FILEDATETIME)
+        sFile = sFile & "," & Format$(pvGetFileDateTime(sFile), FORMAT_FILEDATETIME)
     End If
     Call CopyMemory(uSize, cSize, 8)
     baBuffer = StrConv(sFile, vbFromUnicode)
     If Not pvSendFileTransfer(uOutput, rfbFtpFileHeader, 0, _
             ContentSize:=uSize.LowPart, HighContentSize:=uSize.HighPart, _
-            Ptr:=VarPtr(baBuffer(0)), Size:=UBound(baBuffer) + 1, DelaySend:=True) Then
+            Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer), DelaySend:=True) Then
         GoTo QH
     End If
     '--- success
@@ -1268,7 +1294,7 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvSendFileTransferFileContent(uOutput As UcsBuffer, pStream As stdole.IUnknown, pChecksums As stdole.IUnknown) As Boolean
+Private Function pvSendFileTransferFileContent(uOutput As UcsBuffer, pStream As stdole.IUnknown, sArchiveFile As String, pChecksums As stdole.IUnknown) As Boolean
     Const FUNC_NAME     As String = "pvSendFileTransferFileContent"
     Dim baBuffer()      As Byte
     Dim lBufferSize     As Long
@@ -1279,11 +1305,13 @@ Private Function pvSendFileTransferFileContent(uOutput As UcsBuffer, pStream As 
     lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
     ReDim baBuffer(0 To rfbFtpProtocolPacketSize - 1) As Byte
     Do While Not m_oSocket.HasPendingEvent
-        If pvCheckHResult(IStream_Read(pStream, VarPtr(baBuffer(0)), UBound(baBuffer) + 1, lRead)) < 0 Then
+        If pvCheckHResult(IStream_Read(pStream, pvArrayPtr(baBuffer), pvArraySize(baBuffer), lRead)) < 0 Then
             If Not pvSendFileTransfer(uOutput, rfbFtpAbortFileTransfer) Then
                 GoTo QH
             End If
+Cleanup:
             Set pStream = Nothing
+            Call DeleteFile(StrPtr(sArchiveFile))
             Set pChecksums = Nothing
             Exit Do
         End If
@@ -1291,15 +1319,13 @@ Private Function pvSendFileTransferFileContent(uOutput As UcsBuffer, pStream As 
             If Not pvSendFileTransfer(uOutput, rfbFtpEndOfFile) Then
                 GoTo QH
             End If
-            Set pStream = Nothing
-            Set pChecksums = Nothing
-            Exit Do
+            GoTo Cleanup
         End If
         lChecksum = 0
         If Not pChecksums Is Nothing Then
             If IStream_Read(pChecksums, VarPtr(lChecksum), 4) < 0 Then
                 Set pChecksums = Nothing
-            ElseIf lChecksum = pvCalcAdler32(VarPtr(baBuffer(0)), lRead) Then
+            ElseIf lChecksum = pvCalcAdler32(pvArrayPtr(baBuffer), lRead) Then
                 lChecksum = 1
             End If
         End If
@@ -1310,7 +1336,7 @@ Private Function pvSendFileTransferFileContent(uOutput As UcsBuffer, pStream As 
             End If
         Else
             If Not pvSendFileTransfer(uOutput, rfbFtpFilePacket, 0, ContentSize:=rfbFtpSPacketUncompressed, _
-                    Ptr:=VarPtr(baBuffer(0)), Size:=lRead) Then
+                    Ptr:=pvArrayPtr(baBuffer), Size:=lRead) Then
                 GoTo QH
             End If
         End If
@@ -1335,7 +1361,7 @@ Private Function pvSendFileTransferAcceptFile(uOutput As UcsBuffer, sFile As Str
     End If
     baBuffer = StrConv(sFile, vbFromUnicode)
     If Not pvSendFileTransfer(uOutput, rfbFtpFileAcceptHeader, ContentSize:=eStatus, _
-            Ptr:=VarPtr(baBuffer(0)), Size:=UBound(baBuffer) + 1) Then
+            Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer)) Then
         GoTo QH
     End If
     '--- success
@@ -1376,7 +1402,7 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
                 End Select
             Next
             If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpDirPacket, rfbFtpADrivesList, _
-                    Ptr:=VarPtr(baBuffer(0)), Size:=lSize) Then
+                    Ptr:=pvArrayPtr(baBuffer), Size:=lSize) Then
                 GoTo QH
             End If
         Case rfbFtpRDirContent
@@ -1406,14 +1432,14 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
         Select Case uMsg.ContentParam
         Case rfbFtpCDirCreate
             uMsg.ContentParam = rfbFtpADirCreate
-            If ApiCreateDirectory(sPath, 0) = 0 Then
+            If CreateDirectory(StrPtr(sPath), 0) = 0 Then
                 eStatus = rfbFtpSErrorCmd
             End If
         Case rfbFtpCFileDelete
             uMsg.ContentParam = rfbFtpAFileDelete
-            If ApiDeleteFile(sPath) <> 0 Then
+            If DeleteFile(StrPtr(sPath)) <> 0 Then
                 '--- do nothing
-            ElseIf ApiRemoveDirectory(sPath) <> 0 Then
+            ElseIf RemoveDirectory(StrPtr(sPath)) <> 0 Then
                 sPath = "[ " & sPath & " ]"
             Else
                 eStatus = rfbFtpSErrorCmd
@@ -1423,7 +1449,7 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
             vSplit = Split(sPath, "*", Limit:=2)
             If UBound(vSplit) < 1 Then
                 eStatus = rfbFtpSErrorCmd
-            ElseIf ApiMoveFileEx(vSplit(0), vSplit(1), 0) = 0 Then
+            ElseIf MoveFileEx(StrPtr(vSplit(0)), StrPtr(vSplit(1)), 0) = 0 Then
                 eStatus = rfbFtpSErrorCmd
             End If
         Case Else
@@ -1431,13 +1457,8 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
             sPath = vbNullString
         End Select
         baBuffer = StrConv(sPath, vbFromUnicode)
-        If UBound(baBuffer) >= 0 Then
-            lIdx = VarPtr(baBuffer(0))
-        Else
-            lIdx = 0
-        End If
         If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpCommandReturn, uMsg.ContentParam, ContentSize:=eStatus, _
-                Ptr:=lIdx, Size:=UBound(baBuffer) + 1) Then
+                Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer)) Then
             GoTo QH
         End If
     Case rfbFtpFileTransferRequest
@@ -1445,15 +1466,16 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
             sPath = StrConv(baData, vbUnicode)
         End If
         m_bFtpSendRunning = False
-        If Not pvSendFileTransferFileHeader(m_uSendBuffer(ucsChaFtp), sPath, m_pFtpSendStream) Then
+        If Not pvSendFileTransferFileHeader(m_uSendBuffer(ucsChaFtp), sPath, m_pFtpSendStream, m_sFtpSendArchiveFile) Then
             GoTo QH
         End If
     Case rfbFtpFileChecksums
         '--- note: checksums not tested
-'        Set m_pFtpSendChecksums = SHCreateMemStream(baData(0), UBound(baData) + 1)
+        Set m_pFtpSendChecksums = SHCreateMemStream(ByVal pvArrayPtr(baData), pvArraySize(baData))
     Case rfbFtpFileHeader
         If uMsg.Size = rfbFtpSErrorCmd Then
             Set m_pFtpSendStream = Nothing
+            Call DeleteFile(StrPtr(m_sFtpSendArchiveFile))
         Else
             m_bFtpSendRunning = True
         End If
@@ -1461,20 +1483,36 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
         If UBound(baData) > 0 Then
             sPath = StrConv(baData, vbUnicode)
         End If
-        If Not pvSendFileTransferAcceptFile(m_uSendBuffer(ucsChaFtp), CStr(Split(sPath, ",")(0)), m_pFtpRecvStream) Then
+        m_sFtpRecvFileName = Split(sPath, ",")(0)
+        If Not pvSendFileTransferAcceptFile(m_uSendBuffer(ucsChaFtp), m_sFtpRecvFileName, m_pFtpRecvStream) Then
             GoTo QH
         End If
     Case rfbFtpFilePacket
-        If IStream_Write(m_pFtpRecvStream, VarPtr(baData(0)), UBound(baData) + 1) < 0 Then
+        If IStream_Write(m_pFtpRecvStream, pvArrayPtr(baData), pvArraySize(baData)) < 0 Then
             If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpAbortFileTransfer) Then
                 GoTo QH
             End If
         End If
     Case rfbFtpEndOfFile
         Set m_pFtpRecvStream = Nothing
+        #If ImplZlib Then
+            If Right$(m_sFtpRecvFileName, sizeof_ZIP_SUFFIX) = STR_ZIP_SUFFIX Then
+                sPath = Mid$(m_sFtpRecvFileName, InStrRev(m_sFtpRecvFileName, "\") + 1)
+                If Left$(sPath, sizeof_DIR_PREFIX) = STR_DIR_PREFIX Then
+                    sPath = Left$(m_sFtpRecvFileName, Len(m_sFtpRecvFileName) - Len(sPath)) & _
+                        Mid$(sPath, sizeof_DIR_PREFIX + 1, Len(sPath) - sizeof_DIR_PREFIX - sizeof_ZIP_SUFFIX)
+                    With New cZipArchive
+                        .OpenArchive m_sFtpRecvFileName
+                        .Extract sPath
+                    End With
+                    Call DeleteFile(StrPtr(m_sFtpRecvFileName))
+                End If
+            End If
+        #End If
     Case rfbFtpAbortFileTransfer
         If Not m_pFtpSendStream Is Nothing Then
             Set m_pFtpSendStream = Nothing
+            Call DeleteFile(StrPtr(m_sFtpSendArchiveFile))
             If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpAbortFileTransfer) Then
                 GoTo QH
             End If
@@ -1521,7 +1559,7 @@ Attribute TimerProc.VB_MemberFlags = "40"
         End If
         If Not m_pFtpSendStream Is Nothing And m_bFtpSendRunning Then
             If m_uSendBuffer(ucsChaFrame).Size <= m_uSendBuffer(ucsChaFrame).Pos Then
-                If Not pvSendFileTransferFileContent(m_uSendBuffer(ucsChaFtp), m_pFtpSendStream, m_pFtpSendChecksums) Then
+                If Not pvSendFileTransferFileContent(m_uSendBuffer(ucsChaFtp), m_pFtpSendStream, m_sFtpSendArchiveFile, m_pFtpSendChecksums) Then
                     GoTo QH
                 End If
             End If
@@ -1903,7 +1941,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                                     baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
                                 End If
                             Next
-                            pvBufferWriteBlob uOutput, VarPtr(baRow(0)), .PointerInfo.Width * lBytesPerPixel
+                            pvBufferWriteBlob uOutput, pvArrayPtr(baRow), .PointerInfo.Width * lBytesPerPixel
                         Next
                     Case Else
                         pvBufferWriteBlob uOutput, 0, .PointerInfo.Height * .PointerInfo.Width * lBytesPerPixel
@@ -2035,7 +2073,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                             For lX = 0 To .Tiles(lIdx).Width - 1
                                 baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
                             Next
-                            pvBufferWriteBlob uTile, VarPtr(baRow(0)), .Tiles(lIdx).Width
+                            pvBufferWriteBlob uTile, pvArrayPtr(baRow), .Tiles(lIdx).Width
                         ElseIf lBytesPerPixel = 3 Then
                             Debug.Assert IsBadReadPtr(lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4) = 0
                             Call CopyMemory(baRow(4), ByVal lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4)
@@ -2044,7 +2082,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                                 baRow(lX * 3 + 1) = baRow(4 + lX * 4 + 1)
                                 baRow(lX * 3 + 2) = baRow(4 + lX * 4 + 0)
                             Next
-                            pvBufferWriteBlob uTile, VarPtr(baRow(0)), .Tiles(lIdx).Width * 3
+                            pvBufferWriteBlob uTile, pvArrayPtr(baRow), .Tiles(lIdx).Width * 3
                         Else
                             pvBufferWriteBlob uTile, lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4
                         End If
@@ -2325,7 +2363,7 @@ Private Sub pvBufferWriteArray(uOutput As UcsBuffer, baSrc() As Byte)
     With uOutput
         lSize = pvArraySize(baSrc)
         If lSize > 0 Then
-            .Size = pvArrayWriteBlob(.Data, .Size, VarPtr(baSrc(0)), lSize)
+            .Size = pvArrayWriteBlob(.Data, .Size, pvArrayPtr(baSrc), lSize)
         End If
     End With
 End Sub
@@ -2365,7 +2403,6 @@ Private Function pvArrayWriteBlob(baBuffer() As Byte, ByVal lPos As Long, ByVal 
     Const FUNC_NAME     As String = "pvArrayWriteBlob"
     Dim lBufPtr         As Long
     
-    '--- peek long at ArrPtr(baBuffer)
     Call CopyMemory(lBufPtr, ByVal ArrPtr(baBuffer), 4)
     If lBufPtr = 0 Then
         pvArrayAllocate baBuffer, Clamp(lPos + lSize, 256), FUNC_NAME & ".baBuffer"
@@ -2499,10 +2536,18 @@ EH:
     PrintError sFuncName
 End Sub
 
+Private Property Get pvArrayPtr(baArray() As Byte) As Long
+    Dim lPtr            As Long
+    
+    Call CopyMemory(lPtr, ByVal ArrPtr(baArray), 4)
+    If lPtr <> 0 Then
+        Call CopyMemory(pvArrayPtr, ByVal lPtr + 12, 4)
+    End If
+End Property
+
 Private Property Get pvArraySize(baArray() As Byte) As Long
     Dim lPtr            As Long
     
-    '--- peek long at ArrPtr(baArray)
     Call CopyMemory(lPtr, ByVal ArrPtr(baArray), 4)
     If lPtr <> 0 Then
         pvArraySize = UBound(baArray) + 1
@@ -2587,32 +2632,6 @@ Private Function pvNetworkLong(ByVal lValue As Long) As Long
     pvNetworkLong = ws_htonl(lValue)
 End Function
 
-Private Function Clamp( _
-            ByVal lValue As Long, _
-            Optional ByVal lMin As Long = -2147483647, _
-            Optional ByVal lMax As Long = 2147483647) As Long
-    Select Case lValue
-    Case lMin To lMax
-        Clamp = lValue
-    Case Is < lMin
-        Clamp = lMin
-    Case Is > lMax
-        Clamp = lMax
-    End Select
-End Function
-
-Private Function GetSpecialFolder(ByVal lType As Long) As String
-    GetSpecialFolder = String$(1000, 0)
-    If SHGetFolderPath(0, lType Or CSIDL_FLAG_CREATE, 0, 0, GetSpecialFolder) < 0 Then
-        Call SHGetFolderPath(0, lType, 0, 0, GetSpecialFolder)
-    End If
-    GetSpecialFolder = Left$(GetSpecialFolder, InStr(GetSpecialFolder, vbNullChar) - 1)
-End Function
-
-Private Function PathCombine(sPath As String, sFile As String) As String
-    PathCombine = sPath & IIf(LenB(sPath) <> 0 And Right$(sPath, 1) <> "\" And LenB(sFile) <> 0, "\", vbNullString) & sFile
-End Function
-
 Private Function pvCalcAdler32(ByVal lPtr As Long, ByVal lSize As Long) As Long
     Const LNG_BASE      As Long = 65521
     Dim baData()        As Byte
@@ -2631,6 +2650,50 @@ Private Function pvCalcAdler32(ByVal lPtr As Long, ByVal lSize As Long) As Long
         pvCalcAdler32 = lB * &H1000& Or lA
     End If
 End Function
+
+Private Function pvGetFileDateTime(sFile As String) As Date
+    Dim lMode           As Long
+    Dim hFind           As Long
+    Dim uData           As WIN32_FIND_DATA
+    Dim aTime(0 To 7)   As Integer
+    
+    lMode = SetErrorMode(SEM_FAILCRITICALERRORS)
+    hFind = FindFirstFile(StrPtr(sFile), VarPtr(uData))
+    Call SetErrorMode(lMode)
+    If hFind <> INVALID_HANDLE_VALUE Then
+        Call FindClose(hFind)
+        Call FileTimeToSystemTime(uData.ftLastWriteTime, aTime(0))
+        Call SystemTimeToVariantTime(aTime(0), pvGetFileDateTime)
+    End If
+End Function
+
+#If Not ImplUseShared Then
+Private Function Clamp( _
+            ByVal lValue As Long, _
+            Optional ByVal lMin As Long = -2147483647, _
+            Optional ByVal lMax As Long = 2147483647) As Long
+    Select Case lValue
+    Case lMin To lMax
+        Clamp = lValue
+    Case Is < lMin
+        Clamp = lMin
+    Case Is > lMax
+        Clamp = lMax
+    End Select
+End Function
+
+Private Function GetSpecialFolder(ByVal lType As Long) As String
+    GetSpecialFolder = String$(1000, 0)
+    If SHGetFolderPath(0, lType Or CSIDL_FLAG_CREATE, 0, 0, StrPtr(GetSpecialFolder)) < 0 Then
+        Call SHGetFolderPath(0, lType, 0, 0, GetSpecialFolder)
+    End If
+    GetSpecialFolder = Left$(GetSpecialFolder, InStr(GetSpecialFolder, vbNullChar) - 1)
+End Function
+
+Private Function PathCombine(sPath As String, sFile As String) As String
+    PathCombine = sPath & IIf(LenB(sPath) <> 0 And Right$(sPath, 1) <> "\" And LenB(sFile) <> 0, "\", vbNullString) & sFile
+End Function
+#End If
 
 '=========================================================================
 ' Event impl
@@ -2705,6 +2768,7 @@ End Sub
 ' The Modern Subclassing Thunk (MST)
 '=========================================================================
 
+#If Not ImplUseShared Then
 Public Function InitAddressOfMethod(pObj As Object, ByVal MethodParamCount As Long) As Object
     Dim STR_THUNK       As String: STR_THUNK = "6AAAAABag+oFV4v6ge9QEMEAgcekEcEAuP9EJAS5+QcAAPOri8LB4AgFuQAAAKuLwsHoGAUAjYEAq7gIAAArq7hEJASLq7hJCIsEq7iBi1Qkq4tEJAzB4AIFCIkCM6uLRCQMweASBcDCCACriTrHQgQBAAAAi0QkCIsAiUIIi0QkEIlCDIHqUBDBAIvCBTwRwQCri8IFUBHBAKuLwgVgEcEAq4vCBYQRwQCri8IFjBHBAKuLwgWUEcEAq4vCBZwRwQCri8IFpBHBALn5BwAAq4PABOL6i8dfgcJQEMEAi0wkEIkRK8LCEAAPHwCLVCQE/0IEi0QkDIkQM8DCDABmkItUJAT/QgSLQgTCBAAPHwCLVCQE/0oEi0IEg/gAfgPCBABZWotCDGgAgAAAagBSUf/gZpC4AUAAgMIIALgBQACAwhAAuAFAAIDCGAC4AUAAgMIkAA==" ' 25.3.2019 14:01:08
     Const THUNK_SIZE    As Long = 16728
@@ -2812,6 +2876,7 @@ End Property
 Private Property Let pvThunkGlobalData(sKey As String, ByVal lValue As Long)
     Call SetEnvironmentVariable("_MST_GLOBAL" & GetCurrentProcessId() & "_" & sKey, lValue)
 End Property
+#End If
 
 '=========================================================================
 ' Base class events
