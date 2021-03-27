@@ -1149,6 +1149,8 @@ Private Function pvHandlePointerEvent(uCtx As UcsCaptureContext, uEvent As RfbCl
     pvHandlePointerEvent = True
 End Function
 
+'= file transfer =========================================================
+
 Private Function pvSendFileTransfer( _
             uOutput As UcsBuffer, _
             ByVal ContentType As RfbFileTransferProtocolEnum, _
@@ -1321,13 +1323,15 @@ Cleanup:
             End If
             GoTo Cleanup
         End If
-        lChecksum = 0
-        If Not pChecksums Is Nothing Then
-            If IStream_Read(pChecksums, VarPtr(lChecksum), 4) < 0 Then
-                Set pChecksums = Nothing
-            ElseIf lChecksum = pvCalcAdler32(pvArrayPtr(baBuffer), lRead) Then
-                lChecksum = 1
-            End If
+        If pChecksums Is Nothing Then
+            lChecksum = 0
+        ElseIf IStream_Read(pChecksums, VarPtr(lChecksum), 4) < 0 Then
+            lChecksum = 0
+            Set pChecksums = Nothing
+        ElseIf lChecksum <> pvCalcAdler32(1, baBuffer, 0, lRead) Then
+            lChecksum = 0
+        Else
+            lChecksum = 1
         End If
         If lChecksum <> 0 Then
             If Not pvSendFileTransfer(uOutput, rfbFtpFilePacket, 0, ContentSize:=rfbFtpSPacketAlreadyThere, _
@@ -1375,14 +1379,19 @@ End Function
 Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte) As Boolean
     Const FUNC_NAME     As String = "pvHandleFileTransfer"
     Const STR_TYPES     As String = "0|DirContentRequest|DirPacket|FileTransferRequest|FileHeader|FilePacket|EndOfFile|AbortFileTransfer|FileTransferOffer|FileAcceptHeader|Command|CommandReturn|FileChecksums|13|FileTransferAccess|FileTransferSessionStart|FileTransferSessionEnd|FileTransferProtocolVersion"
+    Dim sPath           As String
     Dim baBuffer()      As Byte
     Dim lSize           As Long
     Dim lIdx            As Long
-    Dim sPath           As String
     Dim eStatus         As RfbFileTransferProtocolEnum
     Dim vSplit          As Variant
     
     On Error GoTo EH
+    If uMsg.ContentType <> rfbFtpFilePacket And uMsg.ContentType <> rfbFtpFileChecksums Then
+        If UBound(baData) >= 0 Then
+            sPath = StrConv(baData, vbUnicode)
+        End If
+    End If
     Select Case uMsg.ContentType
     Case rfbFtpDirContentRequest
         Select Case uMsg.ContentParam
@@ -1406,9 +1415,6 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
                 GoTo QH
             End If
         Case rfbFtpRDirContent
-            If UBound(baData) >= 0 Then
-                sPath = StrConv(baData, vbUnicode)
-            End If
             Select Case sPath
             Case "My Documents\"
                 sPath = GetSpecialFolder(CSIDL_PERSONAL) & "\"
@@ -1426,9 +1432,6 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
             #End If
         End Select
     Case rfbFtpCommand
-        If UBound(baData) >= 0 Then
-            sPath = StrConv(baData, vbUnicode)
-        End If
         Select Case uMsg.ContentParam
         Case rfbFtpCDirCreate
             uMsg.ContentParam = rfbFtpADirCreate
@@ -1437,12 +1440,10 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
             End If
         Case rfbFtpCFileDelete
             uMsg.ContentParam = rfbFtpAFileDelete
-            If DeleteFile(StrPtr(sPath)) <> 0 Then
-                '--- do nothing
-            ElseIf RemoveDirectory(StrPtr(sPath)) <> 0 Then
-                sPath = "[ " & sPath & " ]"
-            Else
-                eStatus = rfbFtpSErrorCmd
+            If DeleteFile(StrPtr(sPath)) = 0 Then
+                If RemoveDirectory(StrPtr(sPath)) = 0 Then
+                    eStatus = rfbFtpSErrorCmd
+                End If
             End If
         Case rfbFtpCFileRename
             uMsg.ContentParam = rfbFtpAFileRename
@@ -1462,15 +1463,12 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
             GoTo QH
         End If
     Case rfbFtpFileTransferRequest
-        If UBound(baData) > 0 Then
-            sPath = StrConv(baData, vbUnicode)
-        End If
         m_bFtpSendRunning = False
         If Not pvSendFileTransferFileHeader(m_uSendBuffer(ucsChaFtp), sPath, m_pFtpSendStream, m_sFtpSendArchiveFile) Then
             GoTo QH
         End If
     Case rfbFtpFileChecksums
-        '--- note: checksums not tested
+        '--- note: used when resuming force stopped or connection broken transfers
         Set m_pFtpSendChecksums = SHCreateMemStream(ByVal pvArrayPtr(baData), pvArraySize(baData))
     Case rfbFtpFileHeader
         If uMsg.Size = rfbFtpSErrorCmd Then
@@ -1480,10 +1478,7 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
             m_bFtpSendRunning = True
         End If
     Case rfbFtpFileTransferOffer
-        If UBound(baData) > 0 Then
-            sPath = StrConv(baData, vbUnicode)
-        End If
-        m_sFtpRecvFileName = Split(sPath, ",")(0)
+        m_sFtpRecvFileName = Split(sPath, ",", Limit:=2)(0)
         If Not pvSendFileTransferAcceptFile(m_uSendBuffer(ucsChaFtp), m_sFtpRecvFileName, m_pFtpRecvStream) Then
             GoTo QH
         End If
@@ -2209,6 +2204,8 @@ EH:
     PrintError FUNC_NAME
 End Sub
 
+'= common helpers ========================================================
+
 Private Sub pvInitTightCapabilities(uCaps() As RfbTightCapability, sInit As String)
     Dim vSplit          As Variant
     Dim vElem           As Variant
@@ -2311,6 +2308,8 @@ Private Function pvSetTrue(bInIde As Boolean) As Boolean
     bInIde = True
     pvSetTrue = True
 End Function
+
+'= stream helpers ========================================================
 
 Private Function IStream_Read(pstm As stdole.IUnknown, ByVal lPtr As Long, ByVal lSize As Long, Optional BytesRead As Long) As Long
     If Not pstm Is Nothing Then
@@ -2632,23 +2631,20 @@ Private Function pvNetworkLong(ByVal lValue As Long) As Long
     pvNetworkLong = ws_htonl(lValue)
 End Function
 
-Private Function pvCalcAdler32(ByVal lPtr As Long, ByVal lSize As Long) As Long
+Private Function pvCalcAdler32(ByVal lAdler As Long, baData() As Byte, ByVal lPos As Long, ByVal lSize As Long) As Long
     Const LNG_BASE      As Long = 65521
-    Dim baData()        As Byte
     Dim lA              As Long
     Dim lB              As Long
     Dim lIdx            As Long
 
-    If lSize > 0 Then
-        ReDim baData(0 To lSize - 1) As Byte
-        Call CopyMemory(baData(0), ByVal lPtr, lSize)
-        lA = 1
-        For lIdx = 0 To lSize - 1
-            lA = (lA + baData(lIdx)) Mod LNG_BASE
-            lB = (lB + lA) Mod LNG_BASE
-        Next
-        pvCalcAdler32 = lB * &H1000& Or lA
-    End If
+    lA = lAdler And &HFFFF&
+    Call CopyMemory(lB, ByVal VarPtr(lAdler) + 2, 2)
+    For lIdx = lPos To lPos + lSize - 1
+        lA = (lA + baData(lIdx)) Mod LNG_BASE
+        lB = (lB + lA) Mod LNG_BASE
+    Next
+    pvCalcAdler32 = lA
+    Call CopyMemory(ByVal VarPtr(pvCalcAdler32) + 2, lB, 2)
 End Function
 
 Private Function pvGetFileDateTime(sFile As String) As Date
