@@ -297,6 +297,7 @@ Private Type RfbClientSetEncodings
     MessageType         As Integer
     NumberOfEncodings   As Integer
     EncodingType()      As Long
+    HasRaw              As Boolean
     HasCopyRect         As Boolean
     HasZlib             As Boolean
     HasTight            As Boolean
@@ -958,6 +959,7 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 ReDim m_uClientEncodings.EncodingType(0 To m_uClientEncodings.NumberOfEncodings - 1) As Long
                 Call CopyMemory(m_uClientEncodings.EncodingType(0), .Data(.Pos + sizeof_RfbClientSetEncodings), m_uClientEncodings.NumberOfEncodings * 4)
                 With m_uClientEncodings
+                    .HasRaw = True
                     .HasCopyRect = False
                     .HasZlib = False
                     .HasTight = False
@@ -999,10 +1001,6 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 End With
             End If
             .Pos = .Pos + sizeof_RfbClientSetEncodings + m_uClientEncodings.NumberOfEncodings * 4
-            Set m_pTimer = Nothing
-            If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
-                GoTo QH
-            End If
         Case rfbMsgFramebufferUpdateRequest
             If .Size - .Pos < sizeof_RfbClientFramebufferUpdateRequest Then
                 GoTo QH
@@ -1544,7 +1542,11 @@ Attribute TimerProc.VB_MemberFlags = "40"
             GoTo QH
         End If
     Else
-        If m_uCaptureFrame.NumTiles + m_uCaptureFrame.NumMoveRects = 0 Then
+        If Not m_uClientEncodings.HasRaw Then
+            If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
+                GoTo QH
+            End If
+        ElseIf m_uCaptureFrame.NumTiles + m_uCaptureFrame.NumMoveRects = 0 Then
             If Not pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
                 GoTo QH
             End If
@@ -1843,9 +1845,12 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
     Dim lBytesPerPixel  As Long
     Dim lBufferSize     As Long
     Dim baRow()         As Byte
-    Dim baRedLut()      As Byte
-    Dim baGreenLut()    As Byte
-    Dim baBlueLut()     As Byte
+    Dim aRedLut()       As Long
+    Dim aGreenLut()     As Long
+    Dim aBlueLut()      As Long
+    Dim aRedHist()      As Long
+    Dim aGreenHist()    As Long
+    Dim aBlueHist()     As Long
     Dim uUpdate         As RfbServerFramebufferUpdate
     Dim uRectangle      As RfbServerRectangle
     Dim lSrcIndex       As Long
@@ -1858,9 +1863,9 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
     Dim cTemp           As Currency
     Dim lSize           As Long
     Dim lQualityLevel   As Long
+    Dim lColor1         As Long
 #If ImplHistograms Then
     Dim aHistogram()    As Long
-    Dim lColor1         As Long
     Dim lColor2         As Long
 #End If
 #If ImplUseDebugLog Then
@@ -1870,17 +1875,16 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
     On Error GoTo EH
     With uFrame
         lBytesPerPixel = m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8
-        If lBytesPerPixel = 1 Then
-            pvCapturePrepareLut baRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
-            pvCapturePrepareLut baGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
-            pvCapturePrepareLut baBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
-        Else
-            #If ImplHistograms Then
-                pvCapturePrepareLut baRedLut, 7, 2 ^ 5
-                pvCapturePrepareLut baGreenLut, 7, 2 ^ 2
-                pvCapturePrepareLut baBlueLut, 3, 2 ^ 0
-            #End If
+        If lBytesPerPixel = 1 Or lBytesPerPixel = 2 Then
+            pvCapturePrepareLut aRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
+            pvCapturePrepareLut aGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
+            pvCapturePrepareLut aBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
         End If
+        #If ImplHistograms Then
+            pvCapturePrepareLut aRedHist, 7, 2 ^ 5
+            pvCapturePrepareLut aGreenHist, 7, 2 ^ 2
+            pvCapturePrepareLut aBlueHist, 3, 2 ^ 0
+        #End If
         pvArrayAllocate baRow, uCtx.Width * 4, FUNC_NAME & ".baRow"
         '--- send pointer
         If .PointerShapeBufferSize > 0 And m_uClientEncodings.HasCursor Then
@@ -1923,7 +1927,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     pvBufferWriteBlob uOutput, VarPtr(.PointerShape(0)), .PointerInfo.Height * .PointerInfo.Width * 4
                 ElseIf .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
                     Select Case lBytesPerPixel
-                    Case 1, 4
+                    Case 1, 2, 4
                         For lY = 0 To .PointerInfo.Height - 1
                             Debug.Assert IsBadReadPtr(VarPtr(.PointerShape(lY * .PointerInfo.Pitch)), .PointerInfo.Width * 4) = 0
                             Call CopyMemory(baRow(0), .PointerShape(lY * .PointerInfo.Pitch), .PointerInfo.Width * 4)
@@ -1932,8 +1936,14 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                                     lIdx = lY * lPitch + lX \ 8
                                     baMask(lIdx) = baMask(lIdx) Or baBit(lX Mod 8)
                                 End If
-                                If lBytesPerPixel = 1 Then
-                                    baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
+                                If lBytesPerPixel <> 4 Then
+                                    lColor1 = aRedLut(baRow(lX * 4 + 2)) Or aGreenLut(baRow(lX * 4 + 1)) Or aBlueLut(baRow(lX * 4 + 0))
+                                    If lBytesPerPixel = 1 Then
+                                        baRow(lX) = lColor1
+                                    Else
+                                        baRow(lX * lBytesPerPixel + 0) = lColor1 And &HFF&
+                                        baRow(lX * lBytesPerPixel + 1) = lColor1 \ &H100&
+                                    End If
                                 End If
                             Next
                             pvBufferWriteBlob uOutput, pvArrayPtr(baRow), .PointerInfo.Width * lBytesPerPixel
@@ -2004,7 +2014,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                         lSize = uTile.Size
                         pvBufferWriteBlob uTile, lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4
                         For lX = 0 To .Tiles(lIdx).Width - 1
-                            lColor1 = baRedLut(uTile.Data(lSize + lX * 4 + 2)) Or baGreenLut(uTile.Data(lSize + lX * 4 + 1)) Or baBlueLut(uTile.Data(lSize + lX * 4 + 0))
+                            lColor1 = aRedHist(uTile.Data(lSize + lX * 4 + 2)) Or aGreenHist(uTile.Data(lSize + lX * 4 + 1)) Or aBlueHist(uTile.Data(lSize + lX * 4 + 0))
                             aHistogram(lColor1) = aHistogram(lColor1) + 1
                         Next
                     Next
@@ -2060,13 +2070,19 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     End If
                 #End If
                 Select Case lBytesPerPixel
-                Case 1, 3, 4
+                Case 1, 2, 3, 4
                     For lY = .Tiles(lIdx).Top To .Tiles(lIdx).Top + .Tiles(lIdx).Height - 1
-                        If lBytesPerPixel = 1 Then
+                        If lBytesPerPixel = 1 Or lBytesPerPixel = 2 Then
                             Debug.Assert IsBadReadPtr(lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4) = 0
                             Call CopyMemory(baRow(0), ByVal lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4)
                             For lX = 0 To .Tiles(lIdx).Width - 1
-                                baRow(lX) = baRedLut(baRow(lX * 4 + 2)) Or baGreenLut(baRow(lX * 4 + 1)) Or baBlueLut(baRow(lX * 4 + 0))
+                                lColor1 = aRedLut(baRow(lX * 4 + 2)) Or aGreenLut(baRow(lX * 4 + 1)) Or aBlueLut(baRow(lX * 4 + 0))
+                                If lBytesPerPixel = 1 Then
+                                    baRow(lX) = lColor1
+                                Else
+                                    baRow(lX * 2 + 0) = lColor1 And &HFF&
+                                    baRow(lX * 2 + 1) = lColor1 \ &H100&
+                                End If
                             Next
                             pvBufferWriteBlob uTile, pvArrayPtr(baRow), .Tiles(lIdx).Width
                         ElseIf lBytesPerPixel = 3 Then
@@ -2124,10 +2140,10 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                 pvHandleReceive
                 If lBytesPerPixel <> m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8 Then
                     lBytesPerPixel = m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8
-                    If lBytesPerPixel = 1 Then
-                        pvCapturePrepareLut baRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
-                        pvCapturePrepareLut baGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
-                        pvCapturePrepareLut baBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
+                    If lBytesPerPixel = 1 Or lBytesPerPixel = 2 Then
+                        pvCapturePrepareLut aRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
+                        pvCapturePrepareLut aGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
+                        pvCapturePrepareLut aBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
                     End If
                 End If
             End If
@@ -2190,14 +2206,14 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Sub pvCapturePrepareLut(baLut() As Byte, ByVal lMax As Long, ByVal lShift As Long)
+Private Sub pvCapturePrepareLut(aLut() As Long, ByVal lMax As Long, ByVal lShift As Long)
     Const FUNC_NAME     As String = "pvCapturePrepareLut"
     Dim lIdx            As Long
     
     On Error GoTo EH
-    pvArrayAllocate baLut, 256, FUNC_NAME & ".baLut"
+    ReDim aLut(0 To 255) As Long
     For lIdx = 0 To 255
-        baLut(lIdx) = Int(lIdx * lMax / 255 + 0.5) * lShift
+        aLut(lIdx) = Int(lIdx * lMax / 255 + 0.5) * lShift
     Next
     Exit Sub
 EH:
