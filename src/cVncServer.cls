@@ -604,6 +604,14 @@ Public Property Get Password() As String
     Password = m_sPassword
 End Property
 
+Public Property Get CaptureWidth() As Long
+    CaptureWidth = m_uCaptureCtx.Width
+End Property
+
+Public Property Get CaptureHeight() As Long
+    CaptureHeight = m_uCaptureCtx.Height
+End Property
+
 Private Property Get pvAddressOfTimerProc() As cVncServer
     Set pvAddressOfTimerProc = InitAddressOfMethod(Me, 0)
 End Property
@@ -687,9 +695,19 @@ QH:
 End Function
 
 Friend Sub frCloseConnection(oConn As cVncServer)
-    On Error GoTo EH
-    m_cConnections.Remove "#" & ObjPtr(oConn)
-EH:
+    Const FUNC_NAME     As String = "frCloseConnection"
+    Dim uEmpty          As UcsCaptureContext
+    
+    If Not oConn Is Nothing Then
+        On Error Resume Next
+        m_cConnections.Remove "#" & ObjPtr(oConn)
+        On Error GoTo 0
+    End If
+    If m_cConnections.Count = 0 Then
+        DebugLog MODULE_NAME, FUNC_NAME, "Stop desktop duplication"
+        m_uCaptureCtx = uEmpty
+        Set m_pTimer = Nothing
+    End If
 End Sub
 
 Private Function pvSendProtocolVersion(uOutput As UcsBuffer) As Boolean
@@ -746,7 +764,7 @@ Private Function pvSendTightSecurityType(uOutput As UcsBuffer) As Boolean
     pvSendTightSecurityType = pvBufferSendAsync(uOutput)
 End Function
 
-Private Function pvSendServerInit(uOutput As UcsBuffer, uCtx As UcsCaptureContext, sName As String) As Boolean
+Private Function pvSendServerInit(uOutput As UcsBuffer, ByVal lWidth As Long, ByVal lHeight As Long, sName As String) As Boolean
     Dim uInit           As RfbServerInit
     Dim uInteraction    As RfbTightInteractionCapabilities
     Dim uServerMsgs()   As RfbTightCapability
@@ -754,8 +772,8 @@ Private Function pvSendServerInit(uOutput As UcsBuffer, uCtx As UcsCaptureContex
     Dim uEncodings()    As RfbTightCapability
     
     With uInit
-        .FramebufferWidth = pvNetworkShort(uCtx.Width)
-        .FramebufferHeight = pvNetworkShort(uCtx.Height)
+        .FramebufferWidth = pvNetworkShort(lWidth)
+        .FramebufferHeight = pvNetworkShort(lHeight)
         With .ServerPixelFormat
             .BitsPerPixel = 32
             .Depth = 24
@@ -811,7 +829,6 @@ Private Sub pvHandleReceive()
     Const SecurityResultOk As Long = 0
     Const SecurityResultFailed As Long = 1
     Dim baBuffer()      As Byte
-    Dim vElem           As Variant
     Dim baPassword()    As Byte
     Dim eSecurityType   As RfbSecurityTypeEnum
     Dim baSecurityPub() As Byte
@@ -952,11 +969,7 @@ DoAuth:
                 Case uscStaExpectClientInit
                     '--- ignore shared flag
                     .Pos = .Pos + 1
-                    vElem = pvCaptureEnumDevices().Item(1)
-                    If Not pvCaptureInit(m_uCaptureCtx, vElem(0), 1) Then
-                        GoTo QH
-                    End If
-                    If Not pvSendServerInit(m_uSendBuffer(ucsChaFrame), m_uCaptureCtx, STR_APP_NAME) Then
+                    If Not pvSendServerInit(m_uSendBuffer(ucsChaFrame), pvParent.CaptureWidth, pvParent.CaptureHeight, STR_APP_NAME) Then
                         GoTo QH
                     End If
                     m_eState = uscStaExpectClientMessage
@@ -1062,7 +1075,6 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
             If m_uClientFramebufferUpdate.Incremental = 0 Then
                 Call RedrawWindow(0, ByVal 0, 0, RDW_INVALIDATE Or RDW_ALLCHILDREN Or RDW_ERASENOW)
             End If
-            Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
         Case rfbMsgKeyEvent
             If .Size - .Pos < sizeof_RfbClientKeyEvent Then
                 GoTo QH
@@ -1080,7 +1092,7 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 .YPosition = pvNetworkShort(.YPosition)
             End With
             .Pos = .Pos + sizeof_RfbClientPointerEvent
-            If Not pvHandlePointerEvent(m_uCaptureCtx, uPointerEvent) Then
+            If Not pvHandlePointerEvent(pvParent.CaptureWidth, pvParent.CaptureHeight, uPointerEvent) Then
                 GoTo QH
             End If
         Case rfbMsgClientCutText
@@ -1151,7 +1163,7 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvHandlePointerEvent(uCtx As UcsCaptureContext, uEvent As RfbClientPointerEvent) As Boolean
+Private Function pvHandlePointerEvent(ByVal lWidth As Long, ByVal lHeight As Long, uEvent As RfbClientPointerEvent) As Boolean
     Dim LNG_BUTTON1     As Long
     Const LNG_BUTTON2   As Long = 2 ^ 1
     Dim LNG_BUTTON3     As Long
@@ -1186,7 +1198,7 @@ Private Function pvHandlePointerEvent(uCtx As UcsCaptureContext, uEvent As RfbCl
             lFlags = lFlags Or MOUSEEVENTF_WHEEL
             lWheel = -120
         End If
-        Call mouse_event(lFlags, .XPosition * 65535 \ (uCtx.Width - 1), .YPosition * 65535 \ (uCtx.Height - 1), lWheel, 0)
+        Call mouse_event(lFlags, .XPosition * 65535 \ (lWidth - 1), .YPosition * 65535 \ (lHeight - 1), lWheel, 0)
     End With
     m_uClientPointerEvent = uEvent
     '--- success
@@ -1291,8 +1303,8 @@ Private Function pvSendFileTransferFileHeader(uOutput As UcsBuffer, sFile As Str
     Const FUNC_NAME     As String = "pvSendFileTransferFileHeader"
     Const FORMAT_FILEDATETIME As String = "mm\/dd\/yyyy hh:nn"
     Const CSIZE_ERROR   As Currency = -0.0001
-    Dim cSize           As Currency
-    Dim uSize           As LARGE_INTEGER
+    Dim CSize           As Currency
+    Dim USize           As LARGE_INTEGER
     Dim baBuffer()      As Byte
     Dim sPath           As String
     
@@ -1317,18 +1329,18 @@ Private Function pvSendFileTransferFileHeader(uOutput As UcsBuffer, sFile As Str
         End If
     #End If
     If SHCreateStreamOnFile(StrPtr(sFile), STGM_READ, pStream) < 0 Then
-        cSize = CSIZE_ERROR
-    ElseIf pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_END, cSize)) < 0 Then
-        cSize = CSIZE_ERROR
+        CSize = CSIZE_ERROR
+    ElseIf pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_END, CSize)) < 0 Then
+        CSize = CSIZE_ERROR
     ElseIf pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_SET)) < 0 Then
-        cSize = CSIZE_ERROR
+        CSize = CSIZE_ERROR
     Else
         sFile = sFile & "," & Format$(pvGetFileDateTime(sFile), FORMAT_FILEDATETIME)
     End If
-    Call CopyMemory(uSize, cSize, 8)
+    Call CopyMemory(USize, CSize, 8)
     baBuffer = StrConv(sFile, vbFromUnicode)
     If Not pvSendFileTransfer(uOutput, rfbFtpFileHeader, 0, _
-            ContentSize:=uSize.LowPart, HighContentSize:=uSize.HighPart, _
+            ContentSize:=USize.LowPart, HighContentSize:=USize.HighPart, _
             Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer), DelaySend:=True) Then
         GoTo QH
     End If
@@ -1578,40 +1590,76 @@ End Function
 Public Function TimerProc() As Long
 Attribute TimerProc.VB_MemberFlags = "40"
     Const FUNC_NAME     As String = "TimerProc"
-    Dim eChannel        As UcsSendChannelEnum
+    Dim oConn           As cVncServer
     
     On Error GoTo EH
     Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
+    For Each oConn In m_cConnections
+        If Not oConn.frNotifyBeforeSendFrame() Then
+            GoTo QH
+        End If
+    Next
+    m_uCaptureFrame.NumTiles = 0
+    m_uCaptureFrame.NumMoveRects = 0
+    m_uCaptureFrame.PointerShapeBufferSize = 0
+    If Not pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
+        GoTo QH
+    End If
+    For Each oConn In m_cConnections
+        If m_uCaptureFrame.NumTiles + m_uCaptureFrame.NumMoveRects > 0 Then
+            Call oConn.frNotifySendFrame(m_uCaptureFrame)
+        End If
+        Call oConn.frNotifyAfterSendFrame
+    Next
+QH:
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+End Function
+
+Friend Function frNotifyBeforeSendFrame() As Boolean
+    Dim eChannel        As UcsSendChannelEnum
+    
     eChannel = pvFirstPendingChannel
     If eChannel >= 0 Then
         If Not pvBufferSendAsync(m_uSendBuffer(eChannel)) Then
             GoTo QH
         End If
     Else
-        If Not pvHasSupport(rfbEncRaw) Then
-            If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
-                GoTo QH
-            End If
-        ElseIf m_uCaptureFrame.NumTiles + m_uCaptureFrame.NumMoveRects = 0 Then
-            If Not pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
-                GoTo QH
-            End If
-            If Not pvCaptureSend(m_uCaptureCtx, m_uCaptureFrame, m_uSendBuffer(ucsChaFrame)) Then
-                GoTo QH
-            End If
+        '--- success
+        frNotifyBeforeSendFrame = True
+    End If
+QH:
+End Function
+
+Friend Function frNotifySendFrame(uCaptureFrame As UcsCaptureFrame) As Boolean
+    If m_uClientFramebufferUpdate.MessageType = 0 Then
+        GoTo QH
+    ElseIf Not pvHasSupport(rfbEncRaw) Then
+        If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
+            GoTo QH
         End If
-        If Not m_pFtpSendStream Is Nothing And m_bFtpSendRunning Then
-            If m_uSendBuffer(ucsChaFrame).Size <= m_uSendBuffer(ucsChaFrame).Pos Then
-                If Not pvSendFileTransferFileContent(m_uSendBuffer(ucsChaFtp), m_pFtpSendStream, m_sFtpSendArchiveFile, m_pFtpSendChecksums) Then
-                    GoTo QH
-                End If
+    Else
+        If Not pvCaptureSend(pvParent.CaptureWidth, uCaptureFrame, m_uSendBuffer(ucsChaFrame)) Then
+            GoTo QH
+        End If
+    End If
+    '--- success
+    frNotifySendFrame = True
+QH:
+End Function
+
+Friend Function frNotifyAfterSendFrame() As Boolean
+    If Not m_pFtpSendStream Is Nothing And m_bFtpSendRunning Then
+        If m_uSendBuffer(ucsChaFrame).Size <= m_uSendBuffer(ucsChaFrame).Pos Then
+            If Not pvSendFileTransferFileContent(m_uSendBuffer(ucsChaFtp), m_pFtpSendStream, m_sFtpSendArchiveFile, m_pFtpSendChecksums) Then
+                GoTo QH
             End If
         End If
     End If
+    '--- success
+    frNotifyAfterSendFrame = True
 QH:
-    Exit Function
-EH:
-    PrintError FUNC_NAME
 End Function
 
 Private Function pvCaptureEnumDevices() As Collection
@@ -1881,7 +1929,7 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFrame, uOutput As UcsBuffer) As Boolean
+Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, uOutput As UcsBuffer) As Boolean
     Const FUNC_NAME     As String = "pvCaptureSend"
     Const LEVEL_CUTOFF  As Long = 85
     Dim lIdx            As Long
@@ -1931,7 +1979,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
             pvCapturePrepareLut aGreenHist, 7, 2 ^ 2
             pvCapturePrepareLut aBlueHist, 3, 2 ^ 0
         #End If
-        pvArrayAllocate baRow, uCtx.Width * 4, FUNC_NAME & ".baRow"
+        pvArrayAllocate baRow, lWidth * 4, FUNC_NAME & ".baRow"
         '--- send pointer
         If .PointerShapeBufferSize > 0 And pvHasSupport(rfbEncPsCursor) Then
             Select Case .PointerInfo.Type
@@ -2014,19 +2062,18 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     pvBufferWriteArray uOutput, baMask
                 End If
             End Select
-            .PointerShapeBufferSize = 0
         End If
         '--- send desktop
-        If Not pvHasSupport(rfbEncCopyRect) Then
-            uFrame.NumMoveRects = 0
+        If pvHasSupport(rfbEncCopyRect) Then
+            lSize = uFrame.NumMoveRects
         End If
         lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
         With uUpdate
             .MessageType = rfbMsgFramebufferUpdate
-            .NumberOfRectangles = pvNetworkShort(uFrame.NumMoveRects + uFrame.NumTiles)
+            .NumberOfRectangles = pvNetworkShort(lSize + uFrame.NumTiles)
         End With
         pvBufferWriteBlob uOutput, VarPtr(uUpdate), sizeof_RfbServerFramebufferUpdate
-        For lIdx = 0 To .NumMoveRects - 1
+        For lIdx = 0 To lSize - 1
             With .MoveRects(lIdx).DestinationRect
                 uRectangle.XPosition = pvNetworkShort(.Left)
                 uRectangle.YPosition = pvNetworkShort(.Top)
@@ -2199,7 +2246,6 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                 Form1.labDebug(lIdx).Caption = vbNullString
             Next
         #End If
-        .NumTiles = 0
     End With
     If Not m_oSocket.HasPendingEvent Then
         If Not pvBufferSendAsync(uOutput) Then
@@ -2914,16 +2960,26 @@ End Function
 Private Sub m_oSocket_OnAccept()
     Const FUNC_NAME     As String = "m_oSocket_OnAccept"
     Dim oSocket         As cAsyncSocket
+    Dim vDevice         As Variant
     Dim oConn           As cVncServer
     
     On Error GoTo EH
     If Not m_oSocket.Accept(oSocket) Then
         GoTo QH
     End If
-    Set oConn = New cVncServer
-    If oConn.frNewConnection(oSocket, Me) Then
-        m_cConnections.Add oConn, "#" & ObjPtr(oConn)
+    If m_cConnections.Count = 0 Then
+        vDevice = pvCaptureEnumDevices().Item(1)
+        If Not pvCaptureInit(m_uCaptureCtx, vDevice(0), 1) Then
+            GoTo QH
+        End If
     End If
+    Set oConn = New cVncServer
+    m_cConnections.Add oConn, "#" & ObjPtr(oConn)
+    If Not oConn.frNewConnection(oSocket, Me) Then
+        frCloseConnection oConn
+        GoTo QH
+    End If
+    Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
 QH:
     Exit Sub
 EH:
@@ -2955,7 +3011,6 @@ Private Sub m_oSocket_OnClose()
     Const FUNC_NAME     As String = "m_oSocket_OnClose"
     
     On Error GoTo EH
-    Set m_pTimer = Nothing
     pvParent.frCloseConnection Me
     Exit Sub
 EH:
@@ -2969,7 +3024,6 @@ Private Sub m_oSocket_OnError(ByVal ErrorCode As Long, ByVal EventMask As UcsAsy
     #If ImplUseDebugLog Then
         DebugLog MODULE_NAME, FUNC_NAME, m_oSocket.GetErrorDescription(ErrorCode) & " (" & ErrorCode & ")"
     #End If
-    Set m_pTimer = Nothing
     pvParent.frCloseConnection Me
     Exit Sub
 EH:
