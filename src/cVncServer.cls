@@ -1605,7 +1605,7 @@ Attribute TimerProc.VB_MemberFlags = "40"
     If Not pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
         GoTo QH
     End If
-    If m_uCaptureFrame.NumTiles + m_uCaptureFrame.NumMoveRects > 0 Then
+    If m_uCaptureFrame.NumTiles + m_uCaptureFrame.NumMoveRects > 0 Or m_uCaptureFrame.PointerShapeBufferSize > 0 Then
         For Each oConn In m_cConnections
             oConn.frNotifySendFrame m_uCaptureFrame
         Next
@@ -1876,7 +1876,19 @@ Private Function pvCaptureFrame(uCtx As UcsCaptureContext, uFrame As UcsCaptureF
             If hResult < 0 Then
                 GoTo QH
             End If
-            uFrame.PointerShapeBufferSize = uFrameInfo.PointerShapeBufferSize
+            With uFrame
+                .PointerShapeBufferSize = uFrameInfo.PointerShapeBufferSize
+                If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
+                    For lIdx = 0 To UBound(.PointerShape) Step 4
+                        '--- swap BGRA to RGBA quads
+                        lLeft = .PointerShape(lIdx)
+                        .PointerShape(lIdx) = .PointerShape(lIdx + 2)
+                        .PointerShape(lIdx + 2) = lLeft
+                    Next
+                Else
+                    .PointerInfo.Height = .PointerInfo.Height \ 2
+                End If
+            End With
         End If
         If uFrameInfo.LastMouseUpdateTime.LowPart <> 0 Or uFrameInfo.LastMouseUpdateTime.HighPart <> 0 Then
             uFrame.PointerVisible = (uFrameInfo.PointerPosition.Visible <> 0)
@@ -1986,16 +1998,6 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
         If .PointerShapeBufferSize > 0 And pvHasSupport(rfbEncPsCursor) Then
             Select Case .PointerInfo.Type
             Case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME
-                If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
-                    For lIdx = 0 To UBound(.PointerShape) Step 4
-                        '--- swap BGRA to RGBA quads
-                        lPtr = .PointerShape(lIdx)
-                        .PointerShape(lIdx) = .PointerShape(lIdx + 2)
-                        .PointerShape(lIdx + 2) = lPtr
-                    Next
-                Else
-                    .PointerInfo.Height = .PointerInfo.Height \ 2
-                End If
                 lPitch = ((.PointerInfo.Width + 7) \ 8)
                 pvArrayAllocate baMask, .PointerInfo.Height * lPitch, FUNC_NAME & ".baMask"
                 For lIdx = 0 To 7
