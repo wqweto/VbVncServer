@@ -68,6 +68,7 @@ Private Sub Form_Load()
         Unload Me
     Else
         m_oServer.Socket.GetSockName sAddress, lPort
-        Label1.Caption = "Waiting for connection on " & sAddress & ":" & lPort
+        Label1.Caption = "Waiting for connection on " & sAddress & ":" & lPort & _
+            IIf(LenB(m_oServer.Password) <> 0, " (password: " & m_oServer.Password & ")", vbNullString)
     End If
 End Sub
