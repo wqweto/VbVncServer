@@ -257,16 +257,16 @@ Private Enum RfbEncodingEnum
     rfbEncJRLE2 = 24
     rfbEncTightPNG = -260
     '--- pseudo-encodings
-    rfbPsEncCursorWithAlpha = -314
-    rfbPsEncExtendedDesktopSize = -308
-    rfbPsEncCompressionLevel = -256
-    rfbPsEncCursor = -239
-    rfbPsEncPointerPosition = -232
-    rfbPsEncLastRect = -224
-    rfbPsEncDesktopSize = -223
-    rfbPsEncJpegQualityLevel = -32
-    rfbPsEncExtendedClipboard = &HC0A1E5CE
-    rfbPsEncFTProtocolVersion = &HFFFF8002
+    rfbEncPsCursorWithAlpha = -314
+    rfbEncPsExtendedDesktopSize = -308
+    rfbEncPsCompressionLevel = -256
+    rfbEncPsCursor = -239
+    rfbEncPsPointerPosition = -232
+    rfbEncPsLastRect = -224
+    rfbEncPsDesktopSize = -223
+    rfbEncPsJpegQualityLevel = -32
+    rfbEncPsExtendedClipboard = &HC0A1E5CE
+    rfbEncPsFTProtocolVersion = &HFFFF8002
 End Enum
 
 Private Type RfbPixelFormat
@@ -302,12 +302,7 @@ Private Type RfbClientSetEncodings
     MessageType         As Integer
     NumberOfEncodings   As Integer
     EncodingType()      As Long
-    HasRaw              As Boolean
-    HasCopyRect         As Boolean
-    HasZlib             As Boolean
-    HasTight            As Boolean
-    HasCursorWithAlpha  As Boolean
-    HasCursor           As Boolean
+    HasEncoding         As Long
     CompressionLevel    As Long
     JpegQualityLevel    As Long
 End Type
@@ -623,6 +618,10 @@ Private Property Get pvFirstPendingChannel() As UcsSendChannelEnum
             Exit For
         End If
     Next
+End Property
+
+Private Property Get pvHasSupport(ByVal eEncoding As RfbEncodingEnum) As Boolean
+    pvHasSupport = (m_uClientEncodings.HasEncoding And pvGetEncodingBit(eEncoding)) <> 0
 End Property
 
 '=========================================================================
@@ -1014,42 +1013,30 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 ReDim m_uClientEncodings.EncodingType(0 To m_uClientEncodings.NumberOfEncodings - 1) As Long
                 Call CopyMemory(m_uClientEncodings.EncodingType(0), .Data(.Pos + sizeof_RfbClientSetEncodings), m_uClientEncodings.NumberOfEncodings * 4)
                 With m_uClientEncodings
-                    .HasRaw = True
-                    .HasCopyRect = False
-                    .HasZlib = False
-                    .HasTight = False
-                    .HasCursorWithAlpha = False
-                    .HasCursor = False
+                    .HasEncoding = pvGetEncodingBit(rfbEncRaw)
                     .CompressionLevel = 0
                     .JpegQualityLevel = 0
                     For lIdx = 0 To .NumberOfEncodings - 1
                         .EncodingType(lIdx) = pvNetworkLong(.EncodingType(lIdx))
+                        .HasEncoding = .HasEncoding Or pvGetEncodingBit(.EncodingType(lIdx))
                         Select Case .EncodingType(lIdx)
-                        Case rfbEncCopyRect
-                            .HasCopyRect = True
-                        Case rfbEncZlib
-                            .HasZlib = True
-                        Case rfbEncTight
-                            .HasTight = True
-                        Case rfbPsEncCursorWithAlpha
-                            .HasCursorWithAlpha = True
-                        Case rfbPsEncCursor
-                            .HasCursor = True
-                        Case rfbPsEncCompressionLevel To rfbPsEncCompressionLevel + 9
-                            .CompressionLevel = .EncodingType(lIdx) - rfbPsEncCompressionLevel + 1
-                        Case rfbPsEncJpegQualityLevel To rfbPsEncJpegQualityLevel + 9
-                            .JpegQualityLevel = .EncodingType(lIdx) - rfbPsEncJpegQualityLevel + 1
-                        Case rfbPsEncFTProtocolVersion
+                        Case rfbEncPsCompressionLevel To rfbEncPsCompressionLevel + 9
+                            .CompressionLevel = .EncodingType(lIdx) - rfbEncPsCompressionLevel + 1
+                        Case rfbEncPsJpegQualityLevel To rfbEncPsJpegQualityLevel + 9
+                            .JpegQualityLevel = .EncodingType(lIdx) - rfbEncPsJpegQualityLevel + 1
+                        Case rfbEncPsFTProtocolVersion
                             If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpFileTransferProtocolVersion, rfbFtpProtocolVersion) Then
                                 GoTo QH
                             End If
                         Case rfbEncRaw, rfbEncRRE, rfbEncCoRRE, rfbEncHextile, rfbEncZlibHextile, rfbEncUltra, rfbEncUltra2, rfbEncTRLE, rfbEncZRLE, _
                                 rfbEncHitachiZYWRLE, rfbEncJPEG, rfbEncJRLE, rfbEncJRLE2, rfbEncTightPNG, _
-                                rfbPsEncExtendedDesktopSize, rfbPsEncPointerPosition, rfbPsEncLastRect, rfbPsEncDesktopSize, rfbPsEncExtendedClipboard
+                                rfbEncPsExtendedDesktopSize, rfbEncPsPointerPosition, rfbEncPsLastRect, rfbEncPsDesktopSize, rfbEncPsExtendedClipboard
                             '--- do nothing
                         Case Else
                             #If ImplUseDebugLog Then
-                                'DebugLog MODULE_NAME, FUNC_NAME, "Unknown encoding type " & .EncodingType(lIdx) & " (&H" & Hex$(.EncodingType(lIdx)) & ")"
+'                                If pvGetEncodingBit(.EncodingType(lIdx)) = 0 Then
+'                                    DebugLog MODULE_NAME, FUNC_NAME, "Unknown encoding type " & .EncodingType(lIdx) & " (&H" & Hex$(.EncodingType(lIdx)) & ")"
+'                                End If
                             #End If
                         End Select
                     Next
@@ -1597,7 +1584,7 @@ Attribute TimerProc.VB_MemberFlags = "40"
             GoTo QH
         End If
     Else
-        If Not m_uClientEncodings.HasRaw Then
+        If Not pvHasSupport(rfbEncRaw) Then
             If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
                 GoTo QH
             End If
@@ -1942,7 +1929,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
         #End If
         pvArrayAllocate baRow, uCtx.Width * 4, FUNC_NAME & ".baRow"
         '--- send pointer
-        If .PointerShapeBufferSize > 0 And m_uClientEncodings.HasCursor Then
+        If .PointerShapeBufferSize > 0 And pvHasSupport(rfbEncPsCursor) Then
             Select Case .PointerInfo.Type
             Case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME
                 If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
@@ -1970,14 +1957,14 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     .YPosition = pvNetworkShort(uFrame.PointerInfo.HotSpot.Y)
                     .Width = pvNetworkShort(uFrame.PointerInfo.Width)
                     .Height = pvNetworkShort(uFrame.PointerInfo.Height)
-                    If uFrame.PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And m_uClientEncodings.HasCursorWithAlpha Then
-                        .EncodingType = pvNetworkLong(rfbPsEncCursorWithAlpha)
+                    If uFrame.PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And pvHasSupport(rfbEncPsCursorWithAlpha) Then
+                        .EncodingType = pvNetworkLong(rfbEncPsCursorWithAlpha)
                     Else
-                        .EncodingType = pvNetworkLong(rfbPsEncCursor)
+                        .EncodingType = pvNetworkLong(rfbEncPsCursor)
                     End If
                 End With
                 pvBufferWriteBlob uOutput, VarPtr(uRectangle), sizeof_RfbServerRectangle
-                If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And m_uClientEncodings.HasCursorWithAlpha Then
+                If .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And pvHasSupport(rfbEncPsCursorWithAlpha) Then
                     pvBufferWriteLong uOutput, pvNetworkLong(rfbEncRaw), Size:=4
                     pvBufferWriteBlob uOutput, VarPtr(.PointerShape(0)), .PointerInfo.Height * .PointerInfo.Width * 4
                 ElseIf .PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR Then
@@ -2026,7 +2013,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
             .PointerShapeBufferSize = 0
         End If
         '--- send desktop
-        If Not m_uClientEncodings.HasCopyRect Then
+        If Not pvHasSupport(rfbEncCopyRect) Then
             uFrame.NumMoveRects = 0
         End If
         lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
@@ -2062,7 +2049,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
             lPitch = (.DirtyRects(lSrcIndex).Right - .DirtyRects(lSrcIndex).Left) * 4
             lPtr = VarPtr(.DirtyBuffers(lSrcIndex).Data(0))
             uTile.Size = 0
-            If m_uClientEncodings.HasTight And m_uClientEncodings.JpegQualityLevel > 0 And lBytesPerPixel > 1 Then
+            If pvHasSupport(rfbEncTight) And m_uClientEncodings.JpegQualityLevel > 0 And lBytesPerPixel > 1 Then
                 #If ImplHistograms Then
                     ReDim aHistogram(0 To 255) As Long
                     For lY = .Tiles(lIdx).Top To .Tiles(lIdx).Top + .Tiles(lIdx).Height - 1
@@ -2120,7 +2107,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                 pvBufferWriteStream uOutput, m_pImageStream
             Else
                 #If ImplZlib Then
-                    If m_uClientEncodings.HasTight And m_uClientEncodings.CompressionLevel > 0 And lBytesPerPixel = 4 Then
+                    If pvHasSupport(rfbEncTight) And m_uClientEncodings.CompressionLevel > 0 And lBytesPerPixel = 4 Then
                         lBytesPerPixel = 3
                     End If
                 #End If
@@ -2157,7 +2144,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                     pvBufferWriteBlob uTile, 0, .Tiles(lIdx).Height * .Tiles(lIdx).Width * lBytesPerPixel
                 End Select
                 #If ImplZlib Then
-                    If m_uClientEncodings.HasTight And m_uClientEncodings.CompressionLevel > 0 Then
+                    If pvHasSupport(rfbEncTight) And m_uClientEncodings.CompressionLevel > 0 Then
                         pvBufferWriteLong uOutput, rfbEncTight, Size:=4
                         lSize = uOutput.Size
                         '--- compression control: &H0 = no reset, use stream 0, no filter
@@ -2167,7 +2154,7 @@ Private Function pvCaptureSend(uCtx As UcsCaptureContext, uFrame As UcsCaptureFr
                             cTemp = (uOutput.Size - lSize) * 100 / (.Tiles(lIdx).Width * .Tiles(lIdx).Height * 4)
                             sDebugInfo = sDebugInfo & " ZLib=" & Format$(cTemp, "0.00") & "%"
                         #End If
-                    ElseIf m_uClientEncodings.HasZlib Then
+                    ElseIf pvHasSupport(rfbEncZlib) Then
                         pvBufferWriteLong uOutput, rfbEncZlib, Size:=4
                         pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
                     Else
@@ -2275,7 +2262,7 @@ EH:
     PrintError FUNC_NAME
 End Sub
 
-'= common helpers ========================================================
+'= helpers ===============================================================
 
 Private Sub pvInitTightCapabilities(uCaps() As RfbTightCapability, sInit As String)
     Dim vSplit          As Variant
@@ -2378,6 +2365,23 @@ End Function
 Private Function pvSetTrue(bInIde As Boolean) As Boolean
     bInIde = True
     pvSetTrue = True
+End Function
+
+Private Function pvGetEncodingBit(ByVal eEncoding As RfbEncodingEnum) As Long
+    Select Case eEncoding
+    Case rfbEncRaw
+        pvGetEncodingBit = 2 ^ 0
+    Case rfbEncCopyRect
+        pvGetEncodingBit = 2 ^ 1
+    Case rfbEncZlib
+        pvGetEncodingBit = 2 ^ 2
+    Case rfbEncTight
+        pvGetEncodingBit = 2 ^ 3
+    Case rfbEncPsCursorWithAlpha
+        pvGetEncodingBit = 2 ^ 4
+    Case rfbEncPsCursor
+        pvGetEncodingBit = 2 ^ 5
+    End Select
 End Function
 
 '= stream helpers ========================================================
