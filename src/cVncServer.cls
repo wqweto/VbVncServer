@@ -600,6 +600,10 @@ Public Property Get LastError() As String
     End If
 End Property
 
+Public Property Get Password() As String
+    Password = m_sPassword
+End Property
+
 Private Property Get pvAddressOfTimerProc() As cVncServer
     Set pvAddressOfTimerProc = InitAddressOfMethod(Me, 0)
 End Property
@@ -643,7 +647,7 @@ Public Function Init(Optional ListenAddress As String, Optional ByVal ListenPort
 QH:
 End Function
 
-Friend Function frNewConnection(oSocket As cAsyncSocket, sPassword As String, oParent As cVncServer) As Boolean
+Friend Function frNewConnection(oSocket As cAsyncSocket, oParent As cVncServer) As Boolean
     Const WINCODEC_SDK_VERSION1   As Long = &H236&
     Const WINCODEC_SDK_VERSION2   As Long = &H237&
     Const IPPROTO_TCP             As Long = 6
@@ -651,7 +655,7 @@ Friend Function frNewConnection(oSocket As cAsyncSocket, sPassword As String, oP
     
     Set m_oSocket = oSocket
     m_lParentWeakRef = ObjPtr(oParent)
-    m_sPassword = sPassword
+    m_sPassword = oParent.Password
     m_oSocket.SockOpt(TCP_NODELAY, IPPROTO_TCP) = 1 '--- disable Nagle algorithm
     If Not pvSendProtocolVersion(m_uSendBuffer(ucsChaFrame)) Then
         GoTo QH
@@ -933,7 +937,7 @@ DoAuth:
                     If Not pvCryptoDhSharedSecret(baBuffer, m_baSecurityChallenge, baSecurityPub, m_baSecurityModulus) Then
                         GoTo QH
                     End If
-                    If Not pvCryptoDesDecrypt(baPassword, baBuffer) Then
+                    If Not pvCryptoDesEncrypt(baPassword, baBuffer, Decrypt:=True) Then
                         GoTo QH
                     End If
                     sPassword = Split(StrConv(baPassword, vbUnicode), vbNullChar, Limit:=2)(0)
@@ -2352,19 +2356,19 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvCheckHResult(ByVal hResult As Long) As Long
-    Dim bInIde          As Boolean
+Private Function pvCheckHResult(ByVal hResult As Long, Optional vErrSource As Variant) As Long
+    Const FUNC_NAME     As String = "pvCheckHResult"
     
-    Debug.Assert pvSetTrue(bInIde)
-    If bInIde And hResult < 0 Then
-        Err.Raise hResult
+    On Error GoTo EH
+    If hResult < 0 Then
+        Err.Raise hResult, vErrSource
     End If
+QH:
     pvCheckHResult = pvCheckHResult
-End Function
-
-Private Function pvSetTrue(bInIde As Boolean) As Boolean
-    bInIde = True
-    pvSetTrue = True
+    Exit Function
+EH:
+    PrintError IIf(IsMissing(vErrSource), FUNC_NAME, vErrSource)
+    Resume QH
 End Function
 
 Private Function pvGetEncodingBit(ByVal eEncoding As RfbEncodingEnum) As Long
@@ -2660,14 +2664,18 @@ Private Function pvCryptoRandomBytes(ByVal lSize As Long) As Byte()
     pvCryptoRandomBytes = baRetVal
 End Function
 
-Private Function pvCryptoDesEncrypt(baInput() As Byte, baKey() As Byte, Optional ByVal EcbMode As Boolean) As Boolean
+Private Function pvCryptoDesEncrypt(baInput() As Byte, baKey() As Byte, Optional ByVal EcbMode As Boolean, Optional ByVal Decrypt As Boolean) As Boolean
+    Const FUNC_NAME     As String = "pvCryptoDesEncrypt"
+    Const LNG_FACILITY_WIN32 As Long = &H80070000
     Dim hProv           As Long
     Dim uBlob           As BLOBHEADER
     Dim lIdx            As Long
     Dim hKey            As Long
     Dim lSize           As Long
+    Dim sApiName        As String
     
     If CryptAcquireContext(hProv, 0, 0, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT) = 0 Then
+        sApiName = "CryptAcquireContext"
         GoTo QH
     End If
     uBlob.bType = PLAINTEXTKEYBLOB
@@ -2675,65 +2683,38 @@ Private Function pvCryptoDesEncrypt(baInput() As Byte, baKey() As Byte, Optional
     uBlob.aiKeyAlg = CALG_DES
     uBlob.cbKeySize = UBound(uBlob.Buffer) + 1
     For lIdx = 0 To Clamp(UBound(baKey), , UBound(uBlob.Buffer))
-        uBlob.Buffer(lIdx) = pvCryptoReverseBits(baKey(lIdx))
+        uBlob.Buffer(lIdx) = pvCryptoReverseBits(baKey(lIdx)) '--- VNC impl idiosyncrasy
     Next
     If CryptImportKey(hProv, uBlob, sizeof_BLOBHEADER + uBlob.cbKeySize, 0, CRYPT_EXPORTABLE, hKey) = 0 Then
+        sApiName = "CryptImportKey"
         GoTo QH
     End If
     If CryptSetKeyParam(hKey, KP_MODE, CLng(IIf(EcbMode, CRYPT_MODE_ECB, CRYPT_MODE_CBC)), 0) = 0 Then
+        sApiName = "CryptSetKeyParam(KP_MODE)"
         GoTo QH
     End If
     If CryptSetKeyParam(hKey, KP_IV, baKey(0), 0) = 0 Then '--- not used in ECB mode
+        sApiName = "CryptSetKeyParam(KP_IV)"
         GoTo QH
     End If
     lSize = UBound(baInput) + 1
-    If CryptEncrypt(hKey, 0, 0, 0, baInput(0), lSize, lSize) = 0 Then
-        GoTo QH
+    If Decrypt Then
+        If CryptDecrypt(hKey, 0, 0, 0, baInput(0), lSize) = 0 Then
+            sApiName = "CryptDecrypt"
+            GoTo QH
+        End If
+    Else
+        If CryptEncrypt(hKey, 0, 0, 0, baInput(0), lSize, lSize) = 0 Then
+            sApiName = "CryptEncrypt"
+            GoTo QH
+        End If
     End If
     '--- success
     pvCryptoDesEncrypt = True
 QH:
-    If hKey <> 0 Then
-        Call CryptDestroyKey(hKey)
+    If LenB(sApiName) <> 0 Then
+        pvCheckHResult Err.LastDllError Or -(Err.LastDllError > 0) * LNG_FACILITY_WIN32, FUNC_NAME & "." & sApiName
     End If
-    If hProv <> 0 Then
-        Call CryptReleaseContext(hProv, 0)
-    End If
-End Function
-
-Private Function pvCryptoDesDecrypt(baInput() As Byte, baKey() As Byte, Optional ByVal EcbMode As Boolean) As Boolean
-    Dim hProv           As Long
-    Dim uBlob           As BLOBHEADER
-    Dim lIdx            As Long
-    Dim hKey            As Long
-    Dim lSize           As Long
-    
-    If CryptAcquireContext(hProv, 0, 0, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT) = 0 Then
-        GoTo QH
-    End If
-    uBlob.bType = PLAINTEXTKEYBLOB
-    uBlob.bVersion = CUR_BLOB_VERSION
-    uBlob.aiKeyAlg = CALG_DES
-    uBlob.cbKeySize = UBound(uBlob.Buffer) + 1
-    For lIdx = 0 To Clamp(UBound(baKey), , UBound(uBlob.Buffer))
-        uBlob.Buffer(lIdx) = pvCryptoReverseBits(baKey(lIdx))
-    Next
-    If CryptImportKey(hProv, uBlob, sizeof_BLOBHEADER + uBlob.cbKeySize, 0, CRYPT_EXPORTABLE, hKey) = 0 Then
-        GoTo QH
-    End If
-    If CryptSetKeyParam(hKey, KP_MODE, CLng(IIf(EcbMode, CRYPT_MODE_ECB, CRYPT_MODE_CBC)), 0) = 0 Then
-        GoTo QH
-    End If
-    If CryptSetKeyParam(hKey, KP_IV, baKey(0), 0) = 0 Then '--- not used in ECB mode
-        GoTo QH
-    End If
-    lSize = UBound(baInput) + 1
-    If CryptDecrypt(hKey, 0, 0, 0, baInput(0), lSize) = 0 Then
-        GoTo QH
-    End If
-    '--- success
-    pvCryptoDesDecrypt = True
-QH:
     If hKey <> 0 Then
         Call CryptDestroyKey(hKey)
     End If
@@ -2940,7 +2921,7 @@ Private Sub m_oSocket_OnAccept()
         GoTo QH
     End If
     Set oConn = New cVncServer
-    If oConn.frNewConnection(oSocket, m_sPassword, Me) Then
+    If oConn.frNewConnection(oSocket, Me) Then
         m_cConnections.Add oConn, "#" & ObjPtr(oConn)
     End If
 QH:
