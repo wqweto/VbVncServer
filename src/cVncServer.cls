@@ -70,7 +70,9 @@ Private Const CUR_BLOB_VERSION              As Long = 2
 Private Const CALG_DES                      As Long = &H6601
 Private Const CRYPT_EXPORTABLE              As Long = &H1
 '--- for CryptSetKeyParam
+Private Const KP_IV                         As Long = 1
 Private Const KP_MODE                       As Long = 4
+Private Const CRYPT_MODE_CBC                As Long = 1
 Private Const CRYPT_MODE_ECB                As Long = 2
 '--- for GetDriveType
 Private Const DRIVE_REMOVABLE               As Long = 2
@@ -124,6 +126,7 @@ Private Declare Function D3DKMTSetProcessSchedulingPriorityClass Lib "gdi32" (By
 '--- ole/oleaut/shell
 Private Declare Sub CoTaskMemFree Lib "ole32" (ByVal pv As Long)
 Private Declare Function DispCallFunc Lib "oleaut32" (ByVal pvInstance As Long, ByVal oVft As Long, ByVal lCc As Long, ByVal vtReturn As VbVarType, ByVal cActuals As Long, prgVt As Any, prgpVarg As Any, pvargResult As Variant) As Long
+Private Declare Function VariantChangeType Lib "oleaut32" (Dest As Variant, src As Variant, ByVal wFlags As Integer, ByVal vt As Long) As Long
 Private Declare Function SHCreateMemStream Lib "shlwapi" Alias "#12" (pInit As Any, ByVal cbInit As Long) As stdole.IUnknown
 Private Declare Function SHCreateStreamOnFile Lib "shlwapi" Alias "SHCreateStreamOnFileW" (ByVal pszFile As Long, ByVal grfMode As Long, ppstm As IUnknown) As Long
 Private Declare Function SHGetFolderPath Lib "shfolder" Alias "SHGetFolderPathW" (ByVal hWnd As Long, ByVal csidl As Long, ByVal hToken As Long, ByVal dwFlags As Long, ByVal szPath As Long) As Long
@@ -137,6 +140,7 @@ Private Declare Function ws_htons Lib "ws2_32" Alias "htons" (ByVal hostshort As
 Private Declare Function CryptAcquireContext Lib "advapi32" Alias "CryptAcquireContextW" (phProv As Long, ByVal pszContainer As Long, ByVal pszProvider As Long, ByVal dwProvType As Long, ByVal dwFlags As Long) As Long
 Private Declare Function CryptReleaseContext Lib "advapi32" (ByVal hProv As Long, ByVal dwFlags As Long) As Long
 Private Declare Function CryptEncrypt Lib "advapi32" (ByVal hKey As Long, ByVal hHash As Long, ByVal Final As Long, ByVal dwFlags As Long, pbData As Any, pdwDataLen As Long, dwBufLen As Long) As Long
+Private Declare Function CryptDecrypt Lib "advapi32" (ByVal hKey As Long, ByVal hHash As Long, ByVal Final As Long, ByVal dwFlags As Long, pbData As Any, pdwDataLen As Long) As Long
 Private Declare Function CryptImportKey Lib "advapi32" (ByVal hProv As Long, pbData As Any, ByVal dwDataLen As Long, ByVal hPubKey As Long, ByVal dwFlags As Long, phKey As Long) As Long
 Private Declare Function CryptDestroyKey Lib "advapi32" (ByVal hKey As Long) As Long
 Private Declare Function CryptSetKeyParam Lib "advapi32" (ByVal hKey As Long, ByVal dwParam As Long, pbData As Any, ByVal dwFlags As Long) As Long
@@ -204,6 +208,7 @@ Private Enum RfbSecurityTypeEnum
     rfbSecVnc = 2
     rfbSecTight = 16
     rfbSecUltraVnc = 17
+    rfbSecUltraVnc_MsLogonIIAuth = &H71
 End Enum
 
 Private Enum RfbMessageEnum
@@ -468,6 +473,7 @@ Private Enum UcsProtocolStateEnum
     uscStaExpectSecurityHandshake
     uscStaExpectSecurityTightResponse
     uscStaExpectSecurityVncResponse
+    uscStaExpectSecurityMsLogonIIAuth
     uscStaExpectClientInit
     uscStaExpectClientMessage
 End Enum
@@ -480,6 +486,7 @@ End Enum
 
 Private Const STR_APP_NAME          As String = "VbVncServer"
 Private Const STR_PROTOCOL_VERSION  As String = "RFB 003.008" & vbLf
+Private Const sizeof_PROTOCOL_VERSION As Long = 12
 Private Const STR_TIGHT_SERVER_MSGS As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
 Private Const STR_TIGHT_CLIENT_MSGS As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
 Private Const STR_TIGHT_ENCODINGS   As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-32;TGHT;JPEGQLVL|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR|-256;TGHT;COMPRLVL"
@@ -489,6 +496,8 @@ Private Const sizeof_DIR_PREFIX     As Long = 9
 Private Const STR_ZIP_SUFFIX        As String = ".zip"
 Private Const sizeof_ZIP_SUFFIX     As Long = 4
 Private Const LNG_TILE_SIZE         As Long = 256
+Private Const LNG_CHALLENGE_SIZE    As Long = 16
+Private Const LNG_DH_KEY_SIZE       As Long = 8
 
 Private m_cConnections          As Collection
 Private m_sPassword             As String
@@ -501,6 +510,7 @@ Private m_uRecvBuffer           As UcsBuffer
 Private m_uSendBuffer(0 To [_ucsChaMax] - 1) As UcsBuffer
 Private m_eSecurityType         As RfbSecurityTypeEnum
 Private m_baSecurityChallenge() As Byte
+Private m_baSecurityModulus()   As Byte
 Private m_uClientPixelFormat    As RfbClientSetPixelFormat
 Private m_uClientEncodings      As RfbClientSetEncodings
 Private m_uClientFramebufferUpdate As RfbClientFramebufferUpdateRequest
@@ -688,14 +698,20 @@ End Function
 Private Function pvSendSecurityTypes(uOutput As UcsBuffer) As Boolean
     pvBufferWriteLong uOutput, 3
     pvBufferWriteLong uOutput, IIf(LenB(m_sPassword) <> 0, rfbSecVnc, rfbSecNone)
-    pvBufferWriteLong uOutput, IIf(LenB(m_sPassword) <> 0, rfbSecUltraVnc, rfbSecUltraVnc) '-- ToDo: choose password protected UltraVNC auth
+    pvBufferWriteLong uOutput, IIf(LenB(m_sPassword) <> 0, rfbSecUltraVnc_MsLogonIIAuth, rfbSecUltraVnc)
     pvBufferWriteLong uOutput, rfbSecTight
     '--- success (or failure)
     pvSendSecurityTypes = pvBufferSendAsync(uOutput)
 End Function
 
-Private Function pvSendSecurityChallenge(uOutput As UcsBuffer, baChallenge() As Byte) As Boolean
+Private Function pvSendSecurityChallenge(uOutput As UcsBuffer, baChallenge() As Byte, baMod() As Byte, baPub() As Byte) As Boolean
     pvBufferWriteArray uOutput, baChallenge
+    If pvArraySize(baMod) > 0 Then
+        pvBufferWriteArray uOutput, baMod
+    End If
+    If pvArraySize(baPub) > 0 Then
+        pvBufferWriteArray uOutput, baPub
+    End If
     '--- success (or failure)
     pvSendSecurityChallenge = pvBufferSendAsync(uOutput)
 End Function
@@ -795,6 +811,9 @@ Private Sub pvHandleReceive()
     Dim vElem           As Variant
     Dim baPassword()    As Byte
     Dim eSecurityType   As RfbSecurityTypeEnum
+    Dim baSecurityPub() As Byte
+    Dim baSecurityGen() As Byte
+    Dim sPassword       As String
     
     On Error GoTo EH
     Do
@@ -813,19 +832,19 @@ Private Sub pvHandleReceive()
                         Exit Do
                     End If
                 Case uscStaExpectProtocolVersion
-                    If .Size - .Pos < Len(STR_PROTOCOL_VERSION) Then
+                    If .Size - .Pos < sizeof_PROTOCOL_VERSION Then
                         Exit Do
                     End If
                     '--- ignore client protocol version
-                    .Pos = .Pos + Len(STR_PROTOCOL_VERSION)
+                    .Pos = .Pos + sizeof_PROTOCOL_VERSION
                     If Not pvSendSecurityTypes(m_uSendBuffer(ucsChaFrame)) Then
                         GoTo QH
                     End If
                     m_eState = uscStaExpectSecurityHandshake
                 Case uscStaExpectSecurityHandshake
-                    m_eSecurityType = .Data(.Pos)
+                    eSecurityType = .Data(.Pos)
                     .Pos = .Pos + 1
-                    eSecurityType = m_eSecurityType
+                    m_eSecurityType = eSecurityType
 DoAuth:
                     Select Case eSecurityType
                     Case rfbSecNone
@@ -838,8 +857,9 @@ DoAuth:
                         End If
                         m_eState = uscStaExpectClientInit
                     Case rfbSecVnc
-                        m_baSecurityChallenge = pvCryptoRandomBytes(16)
-                        If Not pvSendSecurityChallenge(m_uSendBuffer(ucsChaFrame), m_baSecurityChallenge) Then
+                        m_baSecurityChallenge = pvCryptoRandomBytes(LNG_CHALLENGE_SIZE)
+                        Erase baBuffer
+                        If Not pvSendSecurityChallenge(m_uSendBuffer(ucsChaFrame), m_baSecurityChallenge, baBuffer, baBuffer) Then
                             GoTo QH
                         End If
                         m_eState = uscStaExpectSecurityVncResponse
@@ -860,6 +880,14 @@ DoAuth:
                             GoTo QH
                         End If
                         m_eState = uscStaExpectClientInit
+                    Case rfbSecUltraVnc_MsLogonIIAuth
+                        If Not pvCryptoDhMakeKey(m_baSecurityChallenge, baSecurityPub, baSecurityGen, m_baSecurityModulus) Then
+                            GoTo QH
+                        End If
+                        If Not pvSendSecurityChallenge(m_uSendBuffer(ucsChaFrame), baSecurityGen, m_baSecurityModulus, baSecurityPub) Then
+                            GoTo QH
+                        End If
+                        m_eState = uscStaExpectSecurityMsLogonIIAuth
                     Case Else
                         #If ImplUseDebugLog Then
                             DebugLog MODULE_NAME, FUNC_NAME, "Unknown security type (" & eSecurityType & ")"
@@ -875,18 +903,45 @@ DoAuth:
                     eSecurityType = pvNetworkLong(eSecurityType)
                     GoTo DoAuth
                 Case uscStaExpectSecurityVncResponse
-                    If .Size - .Pos < 16 Then
+                    If .Size - .Pos < LNG_CHALLENGE_SIZE Then
                         Exit Do
                     End If
                     baPassword = m_baSecurityChallenge
-                    If Not pvCryptoDesEncrypt(baPassword, StrConv(m_sPassword, vbFromUnicode)) Then
+                    If Not pvCryptoDesEncrypt(baPassword, StrConv(m_sPassword, vbFromUnicode), EcbMode:=True) Then
                         GoTo QH
                     End If
-                    If Not pvArrayEqual(.Data, .Pos, 16, baPassword) Then
+                    If Not pvArrayEqual(.Data, .Pos, LNG_CHALLENGE_SIZE, baPassword) Then
                         pvSendSecurityResult m_uSendBuffer(ucsChaFrame), SecurityResultFailed, "Wrong password"
                         GoTo QH
                     End If
-                    .Pos = .Pos + 16
+                    .Pos = .Pos + LNG_CHALLENGE_SIZE
+                    If Not pvSendSecurityResult(m_uSendBuffer(ucsChaFrame), SecurityResultOk) Then
+                        GoTo QH
+                    End If
+                    m_eState = uscStaExpectClientInit
+                Case uscStaExpectSecurityMsLogonIIAuth
+                    If .Size - .Pos < LNG_DH_KEY_SIZE + 256 + 64 Then
+                        Exit Do
+                    End If
+                    pvArrayAllocate baSecurityPub, LNG_DH_KEY_SIZE, FUNC_NAME & ".baSecurityPub"
+                    Call CopyMemory(baSecurityPub(0), .Data(.Pos), LNG_DH_KEY_SIZE)
+                    .Pos = .Pos + LNG_DH_KEY_SIZE
+                    '--- ignore user
+                    .Pos = .Pos + 256
+                    pvArrayAllocate baPassword, 64, FUNC_NAME & ".baPassword"
+                    Call CopyMemory(baPassword(0), .Data(.Pos), 64)
+                    .Pos = .Pos + 64
+                    If Not pvCryptoDhSharedSecret(baBuffer, m_baSecurityChallenge, baSecurityPub, m_baSecurityModulus) Then
+                        GoTo QH
+                    End If
+                    If Not pvCryptoDesDecrypt(baPassword, baBuffer) Then
+                        GoTo QH
+                    End If
+                    sPassword = Split(StrConv(baPassword, vbUnicode), vbNullChar, Limit:=2)(0)
+                    If sPassword <> m_sPassword Then
+                        pvSendSecurityResult m_uSendBuffer(ucsChaFrame), SecurityResultFailed, "Wrong password"
+                        GoTo QH
+                    End If
                     If Not pvSendSecurityResult(m_uSendBuffer(ucsChaFrame), SecurityResultOk) Then
                         GoTo QH
                     End If
@@ -2579,6 +2634,19 @@ Private Function pvArrayEqual(baFirst() As Byte, ByVal lFirstPos As Long, ByVal 
     pvArrayEqual = (lResult = 0)
 End Function
 
+Private Sub pvArrayReverse(baData() As Byte)
+    Dim lIdx            As Long
+    Dim bTemp           As Byte
+    
+    For lIdx = 0 To UBound(baData) \ 2
+        bTemp = baData(lIdx)
+        baData(lIdx) = baData(UBound(baData) - lIdx)
+        baData(UBound(baData) - lIdx) = bTemp
+    Next
+End Sub
+
+'= crypto helpers ========================================================
+
 Private Function pvCryptoRandomBytes(ByVal lSize As Long) As Byte()
     Const FUNC_NAME     As String = "pvCryptoRandomBytes"
     Dim baRetVal()      As Byte
@@ -2588,7 +2656,7 @@ Private Function pvCryptoRandomBytes(ByVal lSize As Long) As Byte()
     pvCryptoRandomBytes = baRetVal
 End Function
 
-Private Function pvCryptoDesEncrypt(baInput() As Byte, baKey() As Byte) As Boolean
+Private Function pvCryptoDesEncrypt(baInput() As Byte, baKey() As Byte, Optional ByVal EcbMode As Boolean) As Boolean
     Dim hProv           As Long
     Dim uBlob           As BLOBHEADER
     Dim lIdx            As Long
@@ -2608,7 +2676,10 @@ Private Function pvCryptoDesEncrypt(baInput() As Byte, baKey() As Byte) As Boole
     If CryptImportKey(hProv, uBlob, sizeof_BLOBHEADER + uBlob.cbKeySize, 0, CRYPT_EXPORTABLE, hKey) = 0 Then
         GoTo QH
     End If
-    If CryptSetKeyParam(hKey, KP_MODE, CRYPT_MODE_ECB, 0) = 0 Then
+    If CryptSetKeyParam(hKey, KP_MODE, CLng(IIf(EcbMode, CRYPT_MODE_ECB, CRYPT_MODE_CBC)), 0) = 0 Then
+        GoTo QH
+    End If
+    If CryptSetKeyParam(hKey, KP_IV, baKey(0), 0) = 0 Then '--- not used in ECB mode
         GoTo QH
     End If
     lSize = UBound(baInput) + 1
@@ -2617,6 +2688,47 @@ Private Function pvCryptoDesEncrypt(baInput() As Byte, baKey() As Byte) As Boole
     End If
     '--- success
     pvCryptoDesEncrypt = True
+QH:
+    If hKey <> 0 Then
+        Call CryptDestroyKey(hKey)
+    End If
+    If hProv <> 0 Then
+        Call CryptReleaseContext(hProv, 0)
+    End If
+End Function
+
+Private Function pvCryptoDesDecrypt(baInput() As Byte, baKey() As Byte, Optional ByVal EcbMode As Boolean) As Boolean
+    Dim hProv           As Long
+    Dim uBlob           As BLOBHEADER
+    Dim lIdx            As Long
+    Dim hKey            As Long
+    Dim lSize           As Long
+    
+    If CryptAcquireContext(hProv, 0, 0, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT) = 0 Then
+        GoTo QH
+    End If
+    uBlob.bType = PLAINTEXTKEYBLOB
+    uBlob.bVersion = CUR_BLOB_VERSION
+    uBlob.aiKeyAlg = CALG_DES
+    uBlob.cbKeySize = UBound(uBlob.Buffer) + 1
+    For lIdx = 0 To Clamp(UBound(baKey), , UBound(uBlob.Buffer))
+        uBlob.Buffer(lIdx) = pvCryptoReverseBits(baKey(lIdx))
+    Next
+    If CryptImportKey(hProv, uBlob, sizeof_BLOBHEADER + uBlob.cbKeySize, 0, CRYPT_EXPORTABLE, hKey) = 0 Then
+        GoTo QH
+    End If
+    If CryptSetKeyParam(hKey, KP_MODE, CLng(IIf(EcbMode, CRYPT_MODE_ECB, CRYPT_MODE_CBC)), 0) = 0 Then
+        GoTo QH
+    End If
+    If CryptSetKeyParam(hKey, KP_IV, baKey(0), 0) = 0 Then '--- not used in ECB mode
+        GoTo QH
+    End If
+    lSize = UBound(baInput) + 1
+    If CryptDecrypt(hKey, 0, 0, 0, baInput(0), lSize) = 0 Then
+        GoTo QH
+    End If
+    '--- success
+    pvCryptoDesDecrypt = True
 QH:
     If hKey <> 0 Then
         Call CryptDestroyKey(hKey)
@@ -2635,6 +2747,104 @@ Private Function pvCryptoReverseBits(ByVal lByte As Long) As Byte
     lByte = ((lByte And &HCC) \ POW2_2) Or ((lByte And &H33) * POW2_2) And &HFF
     lByte = ((lByte And &HAA) \ POW2_1) Or ((lByte And &H55) * POW2_1) And &HFF
     pvCryptoReverseBits = lByte
+End Function
+
+Private Function pvCryptoDhMakeKey(baPriv() As Byte, baPub() As Byte, baGen() As Byte, baMod() As Byte) As Boolean
+    Dim lGen            As Long
+    Dim lMod            As Long
+    Dim lPriv           As Long
+    
+    lGen = pvCryptoGenerPrime()
+    lMod = pvCryptoGenerPrime()
+    If lGen > lMod Then
+        lPriv = lGen
+        lGen = lMod
+        lMod = lPriv
+    End If
+    lPriv = pvCryptoGenerPrime()
+    baGen = pvCryptoDhToArray(lGen)
+    baMod = pvCryptoDhToArray(lMod)
+    baPriv = pvCryptoDhToArray(lPriv)
+    baPub = pvCryptoDhToArray(pvCryptoModPow(lGen, lPriv, lMod))
+    '--- success
+    pvCryptoDhMakeKey = True
+End Function
+
+Private Function pvCryptoDhSharedSecret(baRetVal() As Byte, baPriv() As Byte, baPub() As Byte, baMod() As Byte) As Boolean
+    baRetVal = pvCryptoDhToArray(pvCryptoModPow(pvCryptoDhFromArray(baPub), pvCryptoDhFromArray(baPriv), pvCryptoDhFromArray(baMod)))
+    '--- success
+    pvCryptoDhSharedSecret = True
+End Function
+
+Private Function pvCryptoGenerPrime(Optional ByVal lN As Long = &H7FFFFFFF) As Long
+    Dim lA              As Long
+    Dim lIdx            As Long
+    
+    Do
+        Call RtlGenRandom(lA, 4)
+        lA = (Abs(lA) Mod lN) Or 1
+        For lIdx = 1 To 100
+            If pvCryptoMillerRabinTest(lA, 25) Then
+                pvCryptoGenerPrime = lA
+                Exit Function
+            End If
+            lA = (lA + 2) Mod lN
+            If lA Mod 3 = 0 Then
+                lA = (lA + 2) Mod lN
+            End If
+        Next
+    Loop
+End Function
+
+Private Function pvCryptoMillerRabinTest(ByVal lN As Long, ByVal lAttempts As Long) As Boolean
+    Dim lA              As Long
+    
+    Do While lAttempts > 0
+        Call RtlGenRandom(lA, 4)
+        lA = Abs(lA) Mod lN
+        If pvCryptoModPow(lA, lN - 1, lN) <> 1 Then
+            Exit Function
+        End If
+        lAttempts = lAttempts - 1
+    Loop
+    pvCryptoMillerRabinTest = True
+End Function
+
+Private Function pvCryptoModPow(ByVal lX As Long, ByVal lY As Long, ByVal lN As Long) As Long
+    Dim vResult         As Variant
+    Dim lIdx            As Long
+    Dim lMask           As Long
+    
+    vResult = CLngLng(1)
+    lMask = &H80000000
+    For lIdx = 0 To 31
+        vResult = (vResult * vResult) Mod lN
+        If (lY And lMask) <> 0 Then
+            vResult = (vResult * lX) Mod lN
+        End If
+        lMask = (lMask \ 2) And &H7FFFFFFF
+    Next
+    pvCryptoModPow = vResult
+End Function
+
+Private Function pvCryptoDhToArray(ByVal lA As Long) As Byte()
+    Const FUNC_NAME     As String = "pvCryptoDhToArray"
+    Dim baRetVal()      As Byte
+    
+    pvArrayAllocate baRetVal, LNG_DH_KEY_SIZE, FUNC_NAME & ".baRetVal"
+    Debug.Assert UBound(baRetVal) >= 3
+    Call CopyMemory(baRetVal(0), lA, 4)
+    pvArrayReverse baRetVal
+    pvCryptoDhToArray = baRetVal
+End Function
+
+Private Function pvCryptoDhFromArray(baArray() As Byte) As Long
+    Dim baTemp()        As Byte
+    
+    baTemp = baArray
+    pvArrayReverse baTemp
+    Debug.Assert UBound(baTemp) >= 3
+    Call CopyMemory(pvCryptoDhFromArray, baTemp(0), 4)
 End Function
 
 '= common helpers ========================================================
@@ -2704,6 +2914,11 @@ End Function
 
 Private Function PathCombine(sPath As String, sFile As String) As String
     PathCombine = sPath & IIf(LenB(sPath) <> 0 And Right$(sPath, 1) <> "\" And LenB(sFile) <> 0, "\", vbNullString) & sFile
+End Function
+
+Private Function CLngLng(vValue As Variant) As Variant
+    Const VT_I8 As Long = &H14
+    Call VariantChangeType(CLngLng, vValue, 0, VT_I8)
 End Function
 #End If
 
