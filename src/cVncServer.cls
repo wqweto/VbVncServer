@@ -93,6 +93,8 @@ Private Const SEM_FAILCRITICALERRORS        As Long = &H1
 Private Const STGM_READ                     As Long = 0
 Private Const STGM_WRITE                    As Long = 1
 Private Const STGM_CREATE                   As Long = &H1000
+'--- for WideCharToMultiByte
+Private Const CP_UTF8                       As Long = 65001
 '--- for thunks
 Private Const MEM_COMMIT                    As Long = &H1000
 Private Const PAGE_EXECUTE_READWRITE        As Long = &H40
@@ -114,6 +116,8 @@ Private Declare Function MoveFileEx Lib "kernel32" Alias "MoveFileExW" (ByVal lp
 Private Declare Function FileTimeToSystemTime Lib "kernel32" (lpFileTime As Any, lpSystemTime As Any) As Long
 Private Declare Function SystemTimeToVariantTime Lib "oleaut32" (lpSystemTime As Any, pvTime As Date) As Long
 Private Declare Function GetFileAttributes Lib "kernel32" Alias "GetFileAttributesW" (ByVal lpFileName As Long) As Long
+Private Declare Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpDefaultChar As Long, ByVal lpUsedDefaultChar As Long) As Long
+Private Declare Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long) As Long
 '--- user32/gdi32
 Private Declare Sub mouse_event Lib "user32" (ByVal dwFlags As Long, ByVal dx As Long, ByVal dy As Long, ByVal cButtons As Long, ByVal dwExtraInfo As Long)
 Private Declare Function GetSystemMetrics Lib "user32" (ByVal nIndex As Long) As Long
@@ -219,23 +223,41 @@ Private Enum RfbMessageEnum
     rfbMsgKeyEvent = 4
     rfbMsgPointerEvent = 5
     rfbMsgClientCutText = 6
-    rfbMsgFileTransfer = 7
-    rfbMsgFileListRequest = 130
-    rfbMsgFileDownloadRequest = 131
-    rfbMsgFileUploadRequest = 132
-    rfbMsgFileUploadData = 133
-    rfbMsgFileDownloadCancel = 134
-    rfbMsgFileUploadFailed = 135
-    rfbMsgFileCreateDirectoryRequest = 136
     '--- server-side
     rfbMsgFramebufferUpdate = 0
     rfbMsgSetColorMapEntries = 1
     rfbMsgBell = 2
     rfbMsgServerCutText = 3
-    rfbMsgFileListData = 130
-    rfbMsgFileDownloadData = 131
-    rfbMsgFileUploadCancel = 132
-    rfbMsgFileDownloadFailed = 133
+    '--- bidirectional
+    rfbMsgFileTransfer = 7
+    rfbMsgTightFileTransfer = 252 ' &HFC
+    '--- tight file transfer
+    rfbMsgTightCompressionSupportRequest = &HFC000100
+    rfbMsgTightCompressionSupportReply = &HFC000101
+    rfbMsgTightFileListRequest = &HFC000102
+    rfbMsgTightFileListReply = &HFC000103
+    rfbMsgTightMd5Request = &HFC000104
+    rfbMsgTightMd5Reply = &HFC000105
+    rfbMsgTightUploadStartRequest = &HFC000106
+    rfbMsgTightUploadStartReply = &HFC000107
+    rfbMsgTightUploadDataRequest = &HFC000108
+    rfbMsgTightUploadDataReply = &HFC000109
+    rfbMsgTightUploadEndRequest = &HFC00010A
+    rfbMsgTightUploadEndReply = &HFC00010B
+    rfbMsgTightDownloadStartRequest = &HFC00010C
+    rfbMsgTightDownloadStartReply = &HFC00010D
+    rfbMsgTightDownloadDataRequest = &HFC00010E
+    rfbMsgTightDownloadDataReply = &HFC00010F
+    rfbMsgTightDownloadEndReply = &HFC000110
+    rfbMsgTightMkdirRequest = &HFC000111
+    rfbMsgTightMkdirReply = &HFC000112
+    rfbMsgTightRemoveRequest = &HFC000113
+    rfbMsgTightRemoveReply = &HFC000114
+    rfbMsgTightRenameRequest = &HFC000115
+    rfbMsgTightRenameReply = &HFC000116
+    rfbMsgTightDirsizeRequest = &HFC000117
+    rfbMsgTightDirsizeReply = &HFC000118
+    rfbMsgTightLastRequestFailedReply = &HFC000119
 End Enum
 
 Private Enum RfbEncodingEnum
@@ -482,8 +504,8 @@ End Enum
 Private Const STR_APP_NAME          As String = "VbVncServer"
 Private Const STR_PROTOCOL_VERSION  As String = "RFB 003.008" & vbLf
 Private Const sizeof_PROTOCOL_VERSION As Long = 12
-Private Const STR_TIGHT_SERVER_MSGS As String = "130;TGHT;FTS_LSDT|131;TGHT;FTS_DNDT|132;TGHT;FTS_UPCN|133;TGHT;FTS_DNFL"
-Private Const STR_TIGHT_CLIENT_MSGS As String = "130;TGHT;FTC_LSRQ|131;TGHT;FTC_DNRQ|132;TGHT;FTC_UPRQ|133;TGHT;FTC_UPDT|134;TGHT;FTC_DNCN|135;TGHT;FTC_UPFL|136;TGHT;FTC_FCDR"
+Private Const STR_TIGHT_SERVER_MSGS As String = "&HFC000101;TGHT;FTSCSRLY|&HFC000103;TGHT;FTSFLRLY|&HFC000107;TGHT;FTSFURLY|&HFC000109;TGHT;FTSUDRLY|&HFC00010B;TGHT;FTSUERLY|&HFC00010D;TGHT;FTSFDRLY|&HFC00010F;TGHT;FTSDDRLY|&HFC000110;TGHT;FTSDERLY|&HFC000112;TGHT;FTSMDRLY|&HFC000114;TGHT;FTSFTRLY|&HFC000116;TGHT;FTSFMRLY|&HFC000118;TGHT;FTSDSRLY|&HFC000119;TGHT;FTLRFRLY"
+Private Const STR_TIGHT_CLIENT_MSGS As String = "&HFC000100;TGHT;FTCCSRST|&HFC000102;TGHT;FTCFLRST|&HFC000106;TGHT;FTCFURST|&HFC000108;TGHT;FTCUDRST|&HFC00010A;TGHT;FTCUERST|&HFC00010C;TGHT;FTCFDRST|&HFC00010E;TGHT;FTCDDRST|&HFC000111;TGHT;FTCMDRST|&HFC000113;TGHT;FTCFRRST|&HFC000115;TGHT;FTCFMRST|&HFC000117;TGHT;FTCDSRST"
 Private Const STR_TIGHT_ENCODINGS   As String = "1;STDV;COPYRECT|6;TRDV;ZLIB____|7;TGHT;TIGHT___|-32;TGHT;JPEGQLVL|-223;TGHT;NEWFBSIZ|-239;TGHT;RCHCURSR|-256;TGHT;COMPRLVL"
 Private Const STR_TIGHT_AUTH_TYPES  As String = "2;STDV;VNCAUTH_"
 Private Const STR_DIR_PREFIX        As String = "!UVNCDIR-"
@@ -573,6 +595,20 @@ Private Type UcsCaptureFrame
     NumTiles            As Long
     Tiles()             As UcsCaptureTile
 End Type
+
+Private Type UcsTightTransfer
+    MessageType         As RfbMessageEnum
+    Path                As String
+    NewFileName         As String
+    CompressionLevel    As Long
+    CompressedSize      As Long
+    UncompressedSize    As Long
+    Offset              As Currency
+    DataSize            As Long
+    Flags               As Long
+    ModificationTime    As Currency
+End Type
+
 
 '=========================================================================
 ' Error handling
@@ -695,7 +731,6 @@ QH:
 End Function
 
 Friend Sub frCloseConnection(oConn As cVncServer)
-    Const FUNC_NAME     As String = "frCloseConnection"
     Dim uEmpty          As UcsCaptureContext
     
     If Not oConn Is Nothing Then
@@ -704,7 +739,6 @@ Friend Sub frCloseConnection(oConn As cVncServer)
         On Error GoTo 0
     End If
     If m_cConnections.Count = 0 Then
-        DebugLog MODULE_NAME, FUNC_NAME, "Stop desktop duplication"
         m_uCaptureCtx = uEmpty
         Set m_pTimer = Nothing
     End If
@@ -1000,6 +1034,8 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
     Dim uPointerEvent   As RfbClientPointerEvent
     Dim uFileTransfer   As RfbFileTransfer
     Dim baData()        As Byte
+    Dim uTightTransfer  As UcsTightTransfer
+    Dim lSize           As Long
     
     On Error GoTo EH
     With uInput
@@ -1015,6 +1051,7 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 .BlueMax = pvNetworkShort(.BlueMax)
             End With
             .Pos = .Pos + UcsClientSetPixelFormatSize
+            Debug.Assert m_uClientPixelFormat.PixelFormat.BitsPerPixel <= 32
         Case rfbMsgSetEncodings
             If .Size - .Pos < sizeof_RfbClientSetEncodings Then
                 GoTo QH
@@ -1131,8 +1168,8 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
             End If
             .Pos = .Pos + sizeof_RfbFileTransfer
             If uFileTransfer.Length > 0 And lIdx > 0 Then
-                ReDim baData(0 To uFileTransfer.Length - 1) As Byte
-                Call CopyMemory(baData(0), .Data(.Pos), uFileTransfer.Length)
+                pvArrayAllocate baData, uFileTransfer.Length, FUNC_NAME & ".baData"
+                Call CopyMemory(ByVal pvArrayPtr(baData), .Data(.Pos), uFileTransfer.Length)
                 .Pos = .Pos + uFileTransfer.Length
             Else
                 baData = vbNullString
@@ -1144,7 +1181,138 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
             Else
                 lIdx = 0
             End If
-            If Not pvHandleFileTransfer(uFileTransfer, baData) Then
+            If Not pvHandleFileTransfer(m_uSendBuffer(ucsChaFtp), uFileTransfer, baData) Then
+                GoTo QH
+            End If
+        Case rfbMsgTightFileTransfer
+            If .Size - .Pos < 4 Then
+                GoTo QH
+            End If
+            Call CopyMemory(uTightTransfer.MessageType, .Data(.Pos), 4)
+            uTightTransfer.MessageType = pvNetworkLong(uTightTransfer.MessageType)
+            Select Case uTightTransfer.MessageType
+            Case rfbMsgTightCompressionSupportRequest
+                .Pos = .Pos + 4
+            Case rfbMsgTightFileListRequest
+                If .Size - .Pos < 4 + 1 + 4 Then
+                    GoTo QH
+                End If
+                Call CopyMemory(lIdx, .Data(.Pos + 5), 4)
+                lIdx = pvNetworkLong(lIdx)
+                If .Size - .Pos < 4 + 1 + 4 + lIdx Then
+                    GoTo QH
+                End If
+                .Pos = .Pos + 4
+                With uTightTransfer
+                    pvBufferReadLong uInput, .CompressionLevel
+                    pvBufferReadUtf8 uInput, .Path
+                End With
+            Case rfbMsgTightUploadStartRequest
+                If .Size - .Pos < 4 + 4 + 1 + 8 Then
+                    GoTo QH
+                End If
+                Call CopyMemory(lIdx, .Data(.Pos + 4), 4)
+                lIdx = pvNetworkLong(lIdx)
+                If .Size - .Pos < 4 + 4 + lIdx + 1 + 8 Then
+                    GoTo QH
+                End If
+                .Pos = .Pos + 4
+                With uTightTransfer
+                    pvBufferReadUtf8 uInput, .Path
+                    pvBufferReadLong uInput, .Flags
+                    pvBufferReadCurrency uInput, .Offset
+                End With
+            Case rfbMsgTightUploadDataRequest
+                If .Size - .Pos < 4 + 1 + 4 + 4 Then
+                    GoTo QH
+                End If
+                Call CopyMemory(lIdx, .Data(.Pos + 5), 4)
+                lIdx = pvNetworkLong(lIdx)
+                If .Size - .Pos < 4 + 1 + 4 + 4 + lIdx Then
+                    GoTo QH
+                End If
+                .Pos = .Pos + 4
+                With uTightTransfer
+                    pvBufferReadLong uInput, .CompressionLevel
+                    pvBufferReadLong uInput, .CompressedSize, Size:=4
+                    pvBufferReadLong uInput, .UncompressedSize, Size:=4
+                End With
+                pvArrayAllocate baData, uTightTransfer.CompressedSize, FUNC_NAME & ".baData"
+                If uTightTransfer.CompressedSize > 0 Then
+                    Call CopyMemory(ByVal pvArrayPtr(baData), .Data(.Pos), pvArraySize(baData))
+                    .Pos = .Pos + uTightTransfer.CompressedSize
+                End If
+            Case rfbMsgTightUploadEndRequest
+                If .Size - .Pos < 4 + 2 + 8 Then
+                    GoTo QH
+                End If
+                .Pos = .Pos + 4
+                With uTightTransfer
+                    pvBufferReadLong uInput, .Flags, Size:=2
+                    pvBufferReadCurrency uInput, .ModificationTime
+                End With
+            Case rfbMsgTightDownloadStartRequest
+                If .Size - .Pos < 4 + 4 + 8 Then
+                    GoTo QH
+                End If
+                Call CopyMemory(lIdx, .Data(.Pos + 4), 4)
+                lIdx = pvNetworkLong(lIdx)
+                If .Size - .Pos < 4 + 4 + lIdx + 8 Then
+                    GoTo QH
+                End If
+                .Pos = .Pos + 4
+                With uTightTransfer
+                    pvBufferReadUtf8 uInput, .Path
+                    pvBufferReadCurrency uInput, .Offset
+                End With
+            Case rfbMsgTightDownloadDataRequest
+                If .Size - .Pos < 4 + 1 + 4 Then
+                    GoTo QH
+                End If
+                .Pos = .Pos + 4
+                With uTightTransfer
+                    pvBufferReadLong uInput, .CompressionLevel
+                    pvBufferReadLong uInput, .DataSize, Size:=4
+                End With
+            Case rfbMsgTightMkdirRequest, rfbMsgTightRemoveRequest, rfbMsgTightDirsizeRequest
+                If .Size - .Pos < 4 + 4 Then
+                    GoTo QH
+                End If
+                Call CopyMemory(lIdx, .Data(.Pos + 4), 4)
+                lIdx = pvNetworkLong(lIdx)
+                If .Size - .Pos < 4 + 4 + lIdx Then
+                    GoTo QH
+                End If
+                .Pos = .Pos + 4
+                pvBufferReadUtf8 uInput, uTightTransfer.Path
+            Case rfbMsgTightRenameRequest
+                If .Size - .Pos < 4 + 4 + 4 Then
+                    GoTo QH
+                End If
+                Call CopyMemory(lIdx, .Data(.Pos + 4), 4)
+                lIdx = pvNetworkLong(lIdx)
+                If .Size - .Pos < 4 + 4 + lIdx + 4 Then
+                    GoTo QH
+                End If
+                Call CopyMemory(lSize, .Data(.Pos + 4 + 4 + lIdx), 4)
+                lSize = pvNetworkLong(lSize)
+                If .Size - .Pos < 4 + 4 + lIdx + 4 + lSize Then
+                    GoTo QH
+                End If
+                .Pos = .Pos + 4
+                With uTightTransfer
+                    pvBufferReadUtf8 uInput, .Path
+                    pvBufferReadUtf8 uInput, .NewFileName
+                End With
+            Case Else
+                #If ImplUseDebugLog Then
+                    DebugLog MODULE_NAME, FUNC_NAME, "Unknown tight file transfer message (&H" & Hex$(uTightTransfer.MessageType) & ")"
+                #End If
+                uTightTransfer.MessageType = 0
+                '--- flush
+                .Pos = .Size
+            End Select
+            If Not pvHandleTightTransfer(m_uSendBuffer(ucsChaFtp), uTightTransfer, baData) Then
                 GoTo QH
             End If
         Case Else
@@ -1432,7 +1600,7 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte) As Boolean
+Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTransfer, baData() As Byte) As Boolean
     Const FUNC_NAME     As String = "pvHandleFileTransfer"
     Const STR_TYPES     As String = "0|DirContentRequest|DirPacket|FileTransferRequest|FileHeader|FilePacket|EndOfFile|AbortFileTransfer|FileTransferOffer|FileAcceptHeader|Command|CommandReturn|FileChecksums|13|FileTransferAccess|FileTransferSessionStart|FileTransferSessionEnd|FileTransferProtocolVersion"
     Dim sPath           As String
@@ -1466,7 +1634,7 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
                     baBuffer(lIdx + 2) = 99     ' Asc("c")
                 End Select
             Next
-            If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpDirPacket, rfbFtpADrivesList, _
+            If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADrivesList, _
                     Ptr:=pvArrayPtr(baBuffer), Size:=lSize) Then
                 GoTo QH
             End If
@@ -1479,7 +1647,7 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
             Case "Network Favorites\"
                 sPath = GetSpecialFolder(CSIDL_NETHOOD) & "\"
             End Select
-            If Not pvSendFileTransferDirContent(m_uSendBuffer(ucsChaFtp), sPath) Then
+            If Not pvSendFileTransferDirContent(uOutput, sPath) Then
                 GoTo QH
             End If
         Case Else
@@ -1514,13 +1682,13 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
             sPath = vbNullString
         End Select
         baBuffer = StrConv(sPath, vbFromUnicode)
-        If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpCommandReturn, uMsg.ContentParam, ContentSize:=eStatus, _
+        If Not pvSendFileTransfer(uOutput, rfbFtpCommandReturn, uMsg.ContentParam, ContentSize:=eStatus, _
                 Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer)) Then
             GoTo QH
         End If
     Case rfbFtpFileTransferRequest
         m_bFtpSendRunning = False
-        If Not pvSendFileTransferFileHeader(m_uSendBuffer(ucsChaFtp), sPath, m_pFtpSendStream, m_sFtpSendArchiveFile) Then
+        If Not pvSendFileTransferFileHeader(uOutput, sPath, m_pFtpSendStream, m_sFtpSendArchiveFile) Then
             GoTo QH
         End If
     Case rfbFtpFileChecksums
@@ -1535,12 +1703,12 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
         End If
     Case rfbFtpFileTransferOffer
         m_sFtpRecvFileName = Split(sPath, ",", Limit:=2)(0)
-        If Not pvSendFileTransferAcceptFile(m_uSendBuffer(ucsChaFtp), m_sFtpRecvFileName, m_pFtpRecvStream) Then
+        If Not pvSendFileTransferAcceptFile(uOutput, m_sFtpRecvFileName, m_pFtpRecvStream) Then
             GoTo QH
         End If
     Case rfbFtpFilePacket
         If IStream_Write(m_pFtpRecvStream, pvArrayPtr(baData), pvArraySize(baData)) < 0 Then
-            If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpAbortFileTransfer) Then
+            If Not pvSendFileTransfer(uOutput, rfbFtpAbortFileTransfer) Then
                 GoTo QH
             End If
         End If
@@ -1564,12 +1732,12 @@ Private Function pvHandleFileTransfer(uMsg As RfbFileTransfer, baData() As Byte)
         If Not m_pFtpSendStream Is Nothing Then
             Set m_pFtpSendStream = Nothing
             Call DeleteFile(StrPtr(m_sFtpSendArchiveFile))
-            If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpAbortFileTransfer) Then
+            If Not pvSendFileTransfer(uOutput, rfbFtpAbortFileTransfer) Then
                 GoTo QH
             End If
         ElseIf Not m_pFtpRecvStream Is Nothing Then
             Set m_pFtpRecvStream = Nothing
-        ElseIf Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), IIf(uMsg.ContentParam = 0, rfbFtpAbortFileTransfer, rfbFtpFileTransferAccess), _
+        ElseIf Not pvSendFileTransfer(uOutput, IIf(uMsg.ContentParam = 0, rfbFtpAbortFileTransfer, rfbFtpFileTransferAccess), _
                 ContentParam:=rfbFtpProtocolVersion, ContentSize:=rfbFtpSProtocolEnabled) Then
             GoTo QH
         End If
@@ -1583,6 +1751,154 @@ QH:
     Exit Function
 EH:
     PrintError FUNC_NAME
+End Function
+
+Private Function pvHandleTightTransfer(uOutput As UcsBuffer, uMsg As UcsTightTransfer, baData() As Byte) As Boolean
+    Const FUNC_NAME     As String = "pvHandleTightTransfer"
+    Const FLAG_FILE     As Long = 0
+    Const FLAG_DIR      As Long = 1
+    Const NO_COMPRESSION As Long = 0
+    Dim baBuffer()      As Byte
+    Dim lSize           As Long
+    Dim lIdx            As Long
+    Dim sFolder         As String
+    Dim uList           As UcsBuffer
+    Dim sFile           As String
+    Dim lMode           As Long
+    Dim hFind           As Long
+    Dim uData           As WIN32_FIND_DATA
+    Dim lCount          As Long
+    Dim cFileTime       As Currency
+    
+    On Error GoTo EH
+    Select Case uMsg.MessageType
+    Case rfbMsgTightCompressionSupportRequest
+        pvBufferWriteLong uOutput, rfbMsgTightCompressionSupportReply, Size:=4
+        pvBufferWriteLong uOutput, NO_COMPRESSION
+    Case rfbMsgTightFileListRequest
+        sFolder = Mid$(uMsg.Path, 2)
+        If LenB(sFolder) = 0 Then
+            ReDim baBuffer(0 To 256) As Byte
+            lSize = GetLogicalDriveStrings(UBound(baBuffer), baBuffer(0))
+            pvBufferWriteLong uList, lSize \ 4, Size:=4
+            For lIdx = 0 To lSize - 3 Step 4
+                sFile = Space$(2)
+                Call CopyMemory(ByVal sFile, baBuffer(lIdx), Len(sFile))
+                pvBufferWriteCurrency uList, 0 '--- size
+                pvBufferWriteCurrency uList, 0 '--- last modified
+                pvBufferWriteLong uList, FLAG_DIR, Size:=2
+                pvBufferWriteUtf8 uList, sFile
+            Next
+        Else
+            '--- count will be fixed later
+            pvBufferWriteLong uList, 0, Size:=4
+            lMode = SetErrorMode(SEM_FAILCRITICALERRORS)
+            hFind = FindFirstFile(StrPtr(PathCombine(sFolder, "*.*")), VarPtr(uData))
+            Call SetErrorMode(lMode)
+            If hFind <> INVALID_HANDLE_VALUE Then
+                Do
+                    sFile = Left$(uData.cFileName, InStr(uData.cFileName, Chr$(0)) - 1)
+                    If sFile <> "." And sFile <> ".." Then
+                        lCount = lCount + 1
+                        pvBufferWriteLong uList, uData.nFileSizeHigh, Size:=4
+                        pvBufferWriteLong uList, uData.nFileSizeLow, Size:=4
+                        pvBufferWriteCurrency uList, pvToUnixTime(uData.ftLastWriteTime)
+                        pvBufferWriteLong uList, IIf((uData.dwFileAttributes And vbDirectory) <> 0, FLAG_DIR, FLAG_FILE), Size:=2
+                        pvBufferWriteUtf8 uList, sFile
+                    End If
+                Loop While FindNextFile(hFind, VarPtr(uData)) <> 0
+                '--- fix count of entries
+                Call CopyMemory(ByVal pvArrayPtr(uList.Data), pvNetworkLong(lCount), 4)
+            End If
+        End If
+        pvBufferWriteLong uOutput, rfbMsgTightFileListReply, Size:=4
+        pvBufferWriteLong uOutput, NO_COMPRESSION
+        pvBufferWriteLong uOutput, uList.Size, Size:=4 '-- uncompressed size
+        pvBufferWriteLong uOutput, uList.Size, Size:=4 '-- compressed size
+        pvBufferWriteBlob uOutput, pvArrayPtr(uList.Data), uList.Size
+    Case rfbMsgTightUploadStartRequest
+        sFile = Mid$(uMsg.Path, 2)
+        If pvCheckHResult(SHCreateStreamOnFile(StrPtr(sFile), STGM_WRITE Or IIf((uMsg.Flags And 1) <> 0, STGM_CREATE, 0), m_pFtpRecvStream)) < 0 Then
+            GoTo Failed
+        End If
+        If pvCheckHResult(IStream_Seek(m_pFtpRecvStream, uMsg.Offset, STREAM_SEEK_SET)) < 0 Then
+            GoTo Failed
+        End If
+        pvBufferWriteLong uOutput, rfbMsgTightUploadStartReply, Size:=4
+    Case rfbMsgTightUploadDataRequest
+        If pvCheckHResult(IStream_Write(m_pFtpRecvStream, pvArrayPtr(baData), pvArraySize(baData))) < 0 Then
+            GoTo Failed
+        End If
+        pvBufferWriteLong uOutput, rfbMsgTightUploadDataReply, Size:=4
+    Case rfbMsgTightUploadEndRequest
+        Set m_pFtpRecvStream = Nothing
+        pvBufferWriteLong uOutput, rfbMsgTightUploadEndReply, Size:=4
+    Case rfbMsgTightDownloadStartRequest
+        m_sFtpRecvFileName = Mid(uMsg.Path, 2)
+        If pvCheckHResult(SHCreateStreamOnFile(StrPtr(m_sFtpRecvFileName), STGM_READ, m_pFtpSendStream)) < 0 Then
+            GoTo Failed
+        End If
+        If pvCheckHResult(IStream_Seek(m_pFtpSendStream, uMsg.Offset, STREAM_SEEK_SET)) < 0 Then
+            GoTo Failed
+        End If
+        pvBufferWriteLong uOutput, rfbMsgTightDownloadStartReply, Size:=4
+    Case rfbMsgTightDownloadDataRequest
+        pvArrayAllocate baBuffer, Clamp(uMsg.DataSize, , 2 ^ 20), FUNC_NAME & ".baBuffer"
+        If pvCheckHResult(IStream_Read(m_pFtpSendStream, pvArrayPtr(baBuffer), pvArraySize(baBuffer), lSize)) < 0 Then
+            GoTo Failed
+        End If
+        If lSize = 0 Then
+            pvBufferWriteLong uOutput, rfbMsgTightDownloadEndReply, Size:=4
+            pvBufferWriteLong uOutput, FLAG_DIR
+            pvGetFileDateTime m_sFtpRecvFileName, cFileTime
+            pvBufferWriteCurrency uOutput, pvToUnixTime(cFileTime)
+            Set m_pFtpSendStream = Nothing
+        Else
+            pvBufferWriteLong uOutput, rfbMsgTightDownloadDataReply, Size:=4
+            pvBufferWriteLong uOutput, NO_COMPRESSION
+            pvBufferWriteLong uOutput, lSize, Size:=4 '-- uncompressed size
+            pvBufferWriteLong uOutput, lSize, Size:=4 '-- compressed size
+            pvBufferWriteBlob uOutput, pvArrayPtr(baBuffer), lSize
+        End If
+    Case rfbMsgTightMkdirRequest
+        sFolder = Mid$(uMsg.Path, 2)
+        If CreateDirectory(StrPtr(sFolder), 0) = 0 Then
+            GoTo Failed
+        End If
+        pvBufferWriteLong uOutput, rfbMsgTightMkdirReply, Size:=4
+    Case rfbMsgTightRemoveRequest
+        sFile = Mid$(uMsg.Path, 2)
+        If DeleteFile(StrPtr(sFile)) = 0 Then
+            If RemoveDirectory(StrPtr(sFile)) = 0 Then
+                GoTo Failed
+            End If
+        End If
+        pvBufferWriteLong uOutput, rfbMsgTightRemoveReply, Size:=4
+    Case rfbMsgTightRenameRequest
+        sFolder = Mid$(uMsg.Path, 2)
+        sFile = Mid$(uMsg.NewFileName, 2)
+        If MoveFileEx(StrPtr(sFolder), StrPtr(sFile), 0) = 0 Then
+            GoTo Failed
+        End If
+        pvBufferWriteLong uOutput, rfbMsgTightRenameReply, Size:=4
+    Case rfbMsgTightDirsizeRequest
+        sFolder = Mid$(uMsg.Path, 2)
+        pvBufferWriteLong uOutput, rfbMsgTightDirsizeReply, Size:=4
+        pvBufferWriteCurrency uOutput, pvGetFolderSize(sFolder)
+    Case 0
+Failed:
+        pvBufferWriteLong uOutput, rfbMsgTightLastRequestFailedReply, Size:=4
+    End Select
+    '--- success (or failure)
+    pvHandleTightTransfer = pvBufferSendAsync(uOutput)
+QH:
+    If hFind <> INVALID_HANDLE_VALUE And hFind <> 0 Then
+        Call FindClose(hFind)
+    End If
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+    Resume QH
 End Function
 
 '= desktop duplication ===================================================
@@ -1982,7 +2298,7 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
     
     On Error GoTo EH
     With uFrame
-        lBytesPerPixel = m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8
+        lBytesPerPixel = Clamp(m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8, 1, 4)
         If lBytesPerPixel = 1 Or lBytesPerPixel = 2 Then
             pvCapturePrepareLut aRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
             pvCapturePrepareLut aGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
@@ -2236,7 +2552,7 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
             If m_oSocket.AvailableBytes > 0 Then
                 pvHandleReceive
                 If lBytesPerPixel <> m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8 Then
-                    lBytesPerPixel = m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8
+                    lBytesPerPixel = Clamp(m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8, 1, 4)
                     If lBytesPerPixel = 1 Or lBytesPerPixel = 2 Then
                         pvCapturePrepareLut aRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
                         pvCapturePrepareLut aGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
@@ -2577,6 +2893,14 @@ Private Sub pvBufferWriteCompactLong(uOutput As UcsBuffer, ByVal lValue As Long)
     End If
 End Sub
 
+Private Sub pvBufferWriteCurrency(uOutput As UcsBuffer, cValue As Currency)
+    Dim uValue          As LARGE_INTEGER
+    
+    Call CopyMemory(uValue, cValue, 8)
+    pvBufferWriteLong uOutput, uValue.HighPart, Size:=4
+    pvBufferWriteLong uOutput, uValue.LowPart, Size:=4
+End Sub
+
 Private Sub pvBufferWriteStream(uOutput As UcsBuffer, pStream As stdole.IUnknown)
     Dim cTemp           As Currency
     Dim lSize           As Long
@@ -2595,6 +2919,21 @@ Private Sub pvBufferWriteStream(uOutput As UcsBuffer, pStream As stdole.IUnknown
         End If
     End If
 QH:
+End Sub
+
+Private Sub pvBufferWriteUtf8(uOutput As UcsBuffer, sText As String)
+    Dim lSize           As Long
+    Dim lPos            As Long
+    
+    lSize = WideCharToMultiByte(CP_UTF8, 0, StrPtr(sText), Len(sText), ByVal 0, 0, 0, 0)
+    If lSize > 0 Then
+        pvBufferWriteLong uOutput, lSize + 1, Size:=4
+        lPos = uOutput.Size
+        pvBufferWriteBlob uOutput, 0, lSize + 1
+        Call WideCharToMultiByte(CP_UTF8, 0, StrPtr(sText), Len(sText), uOutput.Data(lPos), lSize, 0, 0)
+    Else
+        pvBufferWriteLong uOutput, 0, Size:=4
+    End If
 End Sub
 
 Private Function pvBufferSendAsync(uOutput As UcsBuffer) As Boolean
@@ -2636,6 +2975,45 @@ QH:
 EH:
     PrintError FUNC_NAME
 End Function
+
+Private Sub pvBufferReadLong(uInput As UcsBuffer, lValue As Long, Optional ByVal Size As Long = 1)
+    lValue = 0
+    Call CopyMemory(lValue, uInput.Data(uInput.Pos), Size)
+    Select Case Size
+    Case 2
+        lValue = pvNetworkShort(lValue)
+    Case 3
+        lValue = pvNetworkLong(lValue * &H100)
+    Case 4
+        lValue = pvNetworkLong(lValue)
+    End Select
+    uInput.Pos = uInput.Pos + Size
+End Sub
+
+Private Sub pvBufferReadCurrency(uInput As UcsBuffer, cValue As Currency)
+    Dim uValue          As LARGE_INTEGER
+    
+    pvBufferReadLong uInput, uValue.HighPart, Size:=4
+    pvBufferReadLong uInput, uValue.LowPart, Size:=4
+    Call CopyMemory(cValue, uValue, 8)
+End Sub
+
+Private Sub pvBufferReadUtf8(uInput As UcsBuffer, sValue As String)
+    Dim lBytes          As Long
+    Dim lSize           As Long
+    
+    Call CopyMemory(lBytes, uInput.Data(uInput.Pos), 4)
+    lBytes = pvNetworkLong(lBytes)
+    If lBytes > 0 Then
+        sValue = String$(2 * lBytes, 0)
+        lSize = MultiByteToWideChar(CP_UTF8, 0, uInput.Data(uInput.Pos + 4), lBytes, StrPtr(sValue), Len(sValue))
+        sValue = Left$(sValue, lSize)
+        If Right$(sValue, 1) = vbNullChar Then
+            sValue = Left$(sValue, Len(sValue) - 1)
+        End If
+    End If
+    uInput.Pos = uInput.Pos + 4 + lBytes
+End Sub
 
 '= arrays helpers ========================================================
 
@@ -2907,7 +3285,7 @@ Private Function pvCalcAdler32(ByVal lAdler As Long, baData() As Byte, ByVal lPo
     Call CopyMemory(ByVal VarPtr(pvCalcAdler32) + 2, lB, 2)
 End Function
 
-Private Function pvGetFileDateTime(sFile As String) As Date
+Private Function pvGetFileDateTime(sFile As String, Optional cLastWriteTime As Currency) As Date
     Dim lMode           As Long
     Dim hFind           As Long
     Dim uData           As WIN32_FIND_DATA
@@ -2920,6 +3298,46 @@ Private Function pvGetFileDateTime(sFile As String) As Date
         Call FindClose(hFind)
         Call FileTimeToSystemTime(uData.ftLastWriteTime, aTime(0))
         Call SystemTimeToVariantTime(aTime(0), pvGetFileDateTime)
+        cLastWriteTime = uData.ftLastWriteTime
+    End If
+End Function
+
+Private Function pvToUnixTime(ByVal cFileTime As Currency) As Currency
+    pvToUnixTime = cFileTime / 10000 - 1164447360#
+    If pvToUnixTime < 0 Then
+        pvToUnixTime = 0
+    End If
+End Function
+
+Private Function pvGetFolderSize(sFolder As String) As Currency
+    Dim lMode           As Long
+    Dim hFind           As Long
+    Dim uData           As WIN32_FIND_DATA
+    Dim sFile           As String
+    Dim cTemp           As Currency
+    
+    lMode = SetErrorMode(SEM_FAILCRITICALERRORS)
+    hFind = FindFirstFile(StrPtr(PathCombine(sFolder, "*.*")), VarPtr(uData))
+    Call SetErrorMode(lMode)
+    If hFind <> INVALID_HANDLE_VALUE Then
+        Do
+            sFile = Left$(uData.cFileName, InStr(uData.cFileName, Chr$(0)) - 1)
+            If sFile <> "." And sFile <> ".." Then
+                If (uData.dwFileAttributes And vbDirectory) <> 0 Then
+                    pvGetFolderSize = pvGetFolderSize + pvGetFolderSize(PathCombine(sFolder, sFile))
+                Else
+                    lMode = uData.nFileSizeLow
+                    uData.nFileSizeLow = uData.nFileSizeHigh
+                    uData.nFileSizeHigh = lMode
+                    Call CopyMemory(cTemp, uData.nFileSizeHigh, 8)
+                    pvGetFolderSize = pvGetFolderSize + cTemp
+                End If
+            End If
+        Loop While FindNextFile(hFind, VarPtr(uData)) <> 0
+    End If
+QH:
+    If hFind <> INVALID_HANDLE_VALUE And hFind <> 0 Then
+        Call FindClose(hFind)
     End If
 End Function
 
