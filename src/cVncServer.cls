@@ -1412,7 +1412,6 @@ End Function
 Private Function pvSendFileTransferDirContent(uOutput As UcsBuffer, sFolder As String) As Boolean
     Const FUNC_NAME     As String = "pvSendFileTransferDirContent"
     Const offsetof_cFileName As Long = sizeof_WIN32_FIND_DATA - 2 * MAX_PATH - 2 * 14
-    Dim lMode           As Long
     Dim hFind           As Long
     Dim uData           As WIN32_FIND_DATA
     Dim baData()        As Byte
@@ -1421,9 +1420,7 @@ Private Function pvSendFileTransferDirContent(uOutput As UcsBuffer, sFolder As S
     Dim bDelaySend      As Boolean
     
     On Error GoTo EH
-    lMode = SetErrorMode(SEM_FAILCRITICALERRORS)
-    hFind = FindFirstFile(StrPtr(PathCombine(sFolder, "*.*")), VarPtr(uData))
-    Call SetErrorMode(lMode)
+    hFind = pvFindFirstFile(PathCombine(sFolder, "*.*"), uData)
     If hFind = INVALID_HANDLE_VALUE Then
         If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory) Then
             GoTo QH
@@ -1467,68 +1464,13 @@ EH:
     Resume QH
 End Function
 
-Private Function pvSendFileTransferFileHeader(uOutput As UcsBuffer, sFile As String, pStream As stdole.IUnknown, sArchiveFile As String) As Boolean
-    Const FUNC_NAME     As String = "pvSendFileTransferFileHeader"
-    Const FORMAT_FILEDATETIME As String = "mm\/dd\/yyyy hh:nn"
-    Const CSIZE_ERROR   As Currency = -0.0001
-    Dim cStreamSize     As Currency
-    Dim uStreamSize     As LARGE_INTEGER
-    Dim baBuffer()      As Byte
-    Dim sPath           As String
-    
-    On Error GoTo EH
-    Set pStream = Nothing
-    sArchiveFile = vbNullString
-    #If ImplZlib Then
-        If GetFileAttributes(StrPtr(sFile)) = -1 Then
-            sPath = Mid$(sFile, InStrRev(sFile, "\") + 1)
-            If Left(sPath, 2) = "[ " And Right$(sPath, 2) = " ]" Then
-                sArchiveFile = Left$(sFile, Len(sFile) - Len(sPath)) & STR_DIR_PREFIX & Mid$(sPath, 3, Len(sPath) - 4) & STR_ZIP_SUFFIX
-                sPath = Left$(sFile, Len(sFile) - Len(sPath)) & Mid$(sPath, 3, Len(sPath) - 4)
-                If (GetFileAttributes(StrPtr(sPath)) And vbDirectory + vbVolume) = vbDirectory Then
-                    With New cZipArchive
-                        .AddFromFolder PathCombine(sPath, "*.*"), Recursive:=True, IncludeEmptyFolders:=True
-                        If .CompressArchive(sArchiveFile) Then
-                            sFile = sArchiveFile
-                        End If
-                    End With
-                End If
-            End If
-        End If
-    #End If
-    If SHCreateStreamOnFile(StrPtr(sFile), STGM_READ, pStream) < 0 Then
-        cStreamSize = CSIZE_ERROR
-    ElseIf pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_END, cStreamSize)) < 0 Then
-        cStreamSize = CSIZE_ERROR
-    ElseIf pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_SET)) < 0 Then
-        cStreamSize = CSIZE_ERROR
-    Else
-        sFile = sFile & "," & Format$(pvGetFileDateTime(sFile), FORMAT_FILEDATETIME)
-    End If
-    Call CopyMemory(uStreamSize, cStreamSize, 8)
-    baBuffer = StrConv(sFile, vbFromUnicode)
-    If Not pvSendFileTransfer(uOutput, rfbFtpFileHeader, 0, _
-            ContentSize:=uStreamSize.LowPart, HighContentSize:=uStreamSize.HighPart, _
-            Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer), DelaySend:=True) Then
-        GoTo QH
-    End If
-    '--- success
-    pvSendFileTransferFileHeader = True
-QH:
-    Exit Function
-EH:
-    PrintError FUNC_NAME
-End Function
-
 Private Function pvSendFileTransferFileContent(uOutput As UcsBuffer, pStream As stdole.IUnknown, sArchiveFile As String, pChecksums As stdole.IUnknown) As Boolean
     Const FUNC_NAME     As String = "pvSendFileTransferFileContent"
     Dim baBuffer()      As Byte
-    Dim lBufferSize     As Long
     Dim lRead           As Long
     Dim lChecksum       As Long
     
     On Error GoTo EH
-    lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
     ReDim baBuffer(0 To rfbFtpProtocolPacketSize - 1) As Byte
     Do While Not m_oSocket.HasPendingEvent
         If pvCheckHResult(IStream_Read(pStream, pvArrayPtr(baBuffer), pvArraySize(baBuffer), lRead)) < 0 Then
@@ -1577,38 +1519,20 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvSendFileTransferAcceptFile(uOutput As UcsBuffer, sFile As String, pStream As stdole.IUnknown) As Boolean
-    Const FUNC_NAME     As String = "pvSendFileTransferAcceptFile"
-    Dim eStatus         As RfbFileTransferProtocolEnum
-    Dim baBuffer()      As Byte
-    
-    On Error GoTo EH
-    If pvCheckHResult(SHCreateStreamOnFile(StrPtr(sFile), STGM_WRITE Or STGM_CREATE, pStream)) < 0 Then
-        eStatus = rfbFtpSErrorCmd
-        Set pStream = Nothing
-    End If
-    baBuffer = StrConv(sFile, vbFromUnicode)
-    If Not pvSendFileTransfer(uOutput, rfbFtpFileAcceptHeader, ContentSize:=eStatus, _
-            Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer)) Then
-        GoTo QH
-    End If
-    '--- success
-    pvSendFileTransferAcceptFile = True
-QH:
-    Exit Function
-EH:
-    PrintError FUNC_NAME
-End Function
-
 Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTransfer, baData() As Byte) As Boolean
     Const FUNC_NAME     As String = "pvHandleFileTransfer"
     Const STR_TYPES     As String = "0|DirContentRequest|DirPacket|FileTransferRequest|FileHeader|FilePacket|EndOfFile|AbortFileTransfer|FileTransferOffer|FileAcceptHeader|Command|CommandReturn|FileChecksums|13|FileTransferAccess|FileTransferSessionStart|FileTransferSessionEnd|FileTransferProtocolVersion"
+    Const FORMAT_FILEDATETIME As String = "mm\/dd\/yyyy hh:nn"
+    Const ERROR_VALUE   As Currency = -0.0001
     Dim sPath           As String
     Dim baBuffer()      As Byte
     Dim lSize           As Long
     Dim lIdx            As Long
     Dim eStatus         As RfbFileTransferProtocolEnum
     Dim vSplit          As Variant
+    Dim cStreamSize     As Currency
+    Dim uStreamSize     As LARGE_INTEGER
+    Dim sTemp           As String
     
     On Error GoTo EH
     If uMsg.ContentType <> rfbFtpFilePacket And uMsg.ContentType <> rfbFtpFileChecksums Then
@@ -1616,6 +1540,13 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
             sPath = StrConv(baData, vbUnicode)
         End If
     End If
+    #If ImplUseDebugLog Then
+        DebugLog MODULE_NAME, FUNC_NAME, At(Split(STR_TYPES, "|"), uMsg.ContentType) & _
+            IIf(uMsg.ContentParam <> 0, ", ContentParam=" & uMsg.ContentParam, vbNullString) & _
+            IIf(uMsg.Size <> 0, ", Size=" & uMsg.Size, vbNullString) & _
+            IIf(uMsg.Length <> 0, ", Length=" & uMsg.Length, vbNullString) & _
+            IIf(LenB(sPath) <> 0, ", sPath=" & sPath, vbNullString)
+    #End If
     Select Case uMsg.ContentType
     Case rfbFtpDirContentRequest
         Select Case uMsg.ContentParam
@@ -1688,7 +1619,39 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
         End If
     Case rfbFtpFileTransferRequest
         m_bFtpSendRunning = False
-        If Not pvSendFileTransferFileHeader(uOutput, sPath, m_pFtpSendStream, m_sFtpSendArchiveFile) Then
+        Set m_pFtpSendStream = Nothing
+        m_sFtpSendArchiveFile = vbNullString
+        #If ImplZlib Then
+            If GetFileAttributes(StrPtr(sPath)) = -1 Then
+                sTemp = Mid$(sPath, InStrRev(sPath, "\") + 1)
+                If Left(sTemp, 2) = "[ " And Right$(sTemp, 2) = " ]" Then
+                    m_sFtpSendArchiveFile = Left$(sPath, Len(sPath) - Len(sTemp)) & STR_DIR_PREFIX & Mid$(sTemp, 3, Len(sTemp) - 4) & STR_ZIP_SUFFIX
+                    sTemp = Left$(sPath, Len(sPath) - Len(sTemp)) & Mid$(sTemp, 3, Len(sTemp) - 4)
+                    If (GetFileAttributes(StrPtr(sTemp)) And vbDirectory + vbVolume) = vbDirectory Then
+                        With New cZipArchive
+                            .AddFromFolder PathCombine(sTemp, "*.*"), Recursive:=True, IncludeEmptyFolders:=True
+                            If .CompressArchive(m_sFtpSendArchiveFile) Then
+                                sPath = m_sFtpSendArchiveFile
+                            End If
+                        End With
+                    End If
+                End If
+            End If
+        #End If
+        If SHCreateStreamOnFile(StrPtr(sPath), STGM_READ, m_pFtpSendStream) < 0 Then
+            cStreamSize = ERROR_VALUE
+        ElseIf pvCheckHResult(IStream_Seek(m_pFtpSendStream, 0, STREAM_SEEK_END, cStreamSize)) < 0 Then
+            cStreamSize = ERROR_VALUE
+        ElseIf pvCheckHResult(IStream_Seek(m_pFtpSendStream, 0, STREAM_SEEK_SET)) < 0 Then
+            cStreamSize = ERROR_VALUE
+        Else
+            sPath = sPath & "," & Format$(pvGetFileDateTime(sPath), FORMAT_FILEDATETIME)
+        End If
+        Call CopyMemory(uStreamSize, cStreamSize, 8)
+        baBuffer = StrConv(sPath, vbFromUnicode)
+        If Not pvSendFileTransfer(uOutput, rfbFtpFileHeader, 0, _
+                ContentSize:=uStreamSize.LowPart, HighContentSize:=uStreamSize.HighPart, _
+                Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer), DelaySend:=True) Then
             GoTo QH
         End If
     Case rfbFtpFileChecksums
@@ -1703,7 +1666,12 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
         End If
     Case rfbFtpFileTransferOffer
         m_sFtpRecvFileName = Split(sPath, ",", Limit:=2)(0)
-        If Not pvSendFileTransferAcceptFile(uOutput, m_sFtpRecvFileName, m_pFtpRecvStream) Then
+        If pvCheckHResult(pvCreateStreamOnFile(m_sFtpRecvFileName, STGM_WRITE Or STGM_CREATE, m_pFtpRecvStream)) < 0 Then
+            eStatus = rfbFtpSErrorCmd
+        End If
+        baBuffer = StrConv(m_sFtpRecvFileName, vbFromUnicode)
+        If Not pvSendFileTransfer(uOutput, rfbFtpFileAcceptHeader, ContentSize:=eStatus, _
+                Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer)) Then
             GoTo QH
         End If
     Case rfbFtpFilePacket
@@ -1742,9 +1710,6 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
             GoTo QH
         End If
     End Select
-    #If ImplUseDebugLog Then
-        DebugLog MODULE_NAME, FUNC_NAME, Split(STR_TYPES, "|")(uMsg.ContentType) & " (ContentParam=" & uMsg.ContentParam & ", Size=" & uMsg.Size & ", Length=" & uMsg.Length & ", sPath=" & sPath & ")"
-    #End If
     '--- success
     pvHandleFileTransfer = True
 QH:
@@ -1755,6 +1720,7 @@ End Function
 
 Private Function pvHandleTightTransfer(uOutput As UcsBuffer, uMsg As UcsTightTransfer, baData() As Byte) As Boolean
     Const FUNC_NAME     As String = "pvHandleTightTransfer"
+    Const STR_TYPES     As String = "CompressionSupportRequest|CompressionSupportReply|FileListRequest|FileListReply|Md5Request|Md5Reply|UploadStartRequest|UploadStartReply|UploadDataRequest|UploadDataReply|UploadEndRequest|UploadEndReply|DownloadStartRequest|DownloadStartReply|DownloadDataRequest|DownloadDataReply|DownloadEndReply|MkdirRequest|MkdirReply|RemoveRequest|RemoveReply|RenameRequest|RenameReply|DirsizeRequest|DirsizeReply|LastRequestFailedReply"
     Const FLAG_FILE     As Long = 0
     Const FLAG_DIR      As Long = 1
     Const NO_COMPRESSION As Long = 0
@@ -1764,13 +1730,19 @@ Private Function pvHandleTightTransfer(uOutput As UcsBuffer, uMsg As UcsTightTra
     Dim sFolder         As String
     Dim uList           As UcsBuffer
     Dim sFile           As String
-    Dim lMode           As Long
     Dim hFind           As Long
     Dim uData           As WIN32_FIND_DATA
     Dim lCount          As Long
     Dim cFileTime       As Currency
     
     On Error GoTo EH
+    #If ImplUseDebugLog Then
+        DebugLog MODULE_NAME, FUNC_NAME, At(Split(STR_TYPES, "|"), uMsg.MessageType And &HFF) & _
+            IIf(uMsg.UncompressedSize <> 0, ", UncompressedSize=" & uMsg.UncompressedSize, vbNullString) & _
+            IIf(uMsg.DataSize <> 0, ", DataSize=" & uMsg.DataSize, vbNullString) & _
+            IIf(uMsg.Offset <> 0, ", Offset=" & uMsg.Offset, vbNullString) & _
+            IIf(LenB(uMsg.Path) <> 0, ", Path=" & uMsg.Path, vbNullString)
+    #End If
     Select Case uMsg.MessageType
     Case rfbMsgTightCompressionSupportRequest
         pvBufferWriteLong uOutput, rfbMsgTightCompressionSupportReply, Size:=4
@@ -1792,9 +1764,7 @@ Private Function pvHandleTightTransfer(uOutput As UcsBuffer, uMsg As UcsTightTra
         Else
             '--- count will be fixed later
             pvBufferWriteLong uList, 0, Size:=4
-            lMode = SetErrorMode(SEM_FAILCRITICALERRORS)
-            hFind = FindFirstFile(StrPtr(PathCombine(sFolder, "*.*")), VarPtr(uData))
-            Call SetErrorMode(lMode)
+            hFind = pvFindFirstFile(PathCombine(sFolder, "*.*"), uData)
             If hFind <> INVALID_HANDLE_VALUE Then
                 Do
                     sFile = Left$(uData.cFileName, InStr(uData.cFileName, Chr$(0)) - 1)
@@ -1818,7 +1788,7 @@ Private Function pvHandleTightTransfer(uOutput As UcsBuffer, uMsg As UcsTightTra
         pvBufferWriteBlob uOutput, pvArrayPtr(uList.Data), uList.Size
     Case rfbMsgTightUploadStartRequest
         sFile = Mid$(uMsg.Path, 2)
-        If pvCheckHResult(SHCreateStreamOnFile(StrPtr(sFile), STGM_WRITE Or IIf((uMsg.Flags And 1) <> 0, STGM_CREATE, 0), m_pFtpRecvStream)) < 0 Then
+        If pvCheckHResult(pvCreateStreamOnFile(sFile, STGM_WRITE Or IIf((uMsg.Flags And 1) <> 0, STGM_CREATE, 0), m_pFtpRecvStream)) < 0 Then
             GoTo Failed
         End If
         If pvCheckHResult(IStream_Seek(m_pFtpRecvStream, uMsg.Offset, STREAM_SEEK_SET)) < 0 Then
@@ -1835,7 +1805,7 @@ Private Function pvHandleTightTransfer(uOutput As UcsBuffer, uMsg As UcsTightTra
         pvBufferWriteLong uOutput, rfbMsgTightUploadEndReply, Size:=4
     Case rfbMsgTightDownloadStartRequest
         m_sFtpRecvFileName = Mid(uMsg.Path, 2)
-        If pvCheckHResult(SHCreateStreamOnFile(StrPtr(m_sFtpRecvFileName), STGM_READ, m_pFtpSendStream)) < 0 Then
+        If pvCheckHResult(pvCreateStreamOnFile(m_sFtpRecvFileName, STGM_READ, m_pFtpSendStream)) < 0 Then
             GoTo Failed
         End If
         If pvCheckHResult(IStream_Seek(m_pFtpSendStream, uMsg.Offset, STREAM_SEEK_SET)) < 0 Then
@@ -2754,6 +2724,22 @@ Private Function pvGetEncodingBit(ByVal eEncoding As RfbEncodingEnum) As Long
     End Select
 End Function
 
+Private Function pvFindFirstFile(sPath As String, uData As WIN32_FIND_DATA) As Long
+    Dim lMode           As Long
+    
+    lMode = SetErrorMode(SEM_FAILCRITICALERRORS)
+    pvFindFirstFile = FindFirstFile(StrPtr(sPath), VarPtr(uData))
+    Call SetErrorMode(lMode)
+End Function
+
+Private Function pvCreateStreamOnFile(sFile As String, ByVal lFileMode As Long, pStream As stdole.IUnknown) As Long
+    Dim lMode           As Long
+    
+    lMode = SetErrorMode(SEM_FAILCRITICALERRORS)
+    pvCreateStreamOnFile = SHCreateStreamOnFile(StrPtr(sFile), lFileMode, pStream)
+    Call SetErrorMode(lMode)
+End Function
+
 '= stream helpers ========================================================
 
 Private Function IStream_Read(pstm As stdole.IUnknown, ByVal lPtr As Long, ByVal lSize As Long, Optional BytesRead As Long) As Long
@@ -3286,14 +3272,11 @@ Private Function pvCalcAdler32(ByVal lAdler As Long, baData() As Byte, ByVal lPo
 End Function
 
 Private Function pvGetFileDateTime(sFile As String, Optional cLastWriteTime As Currency) As Date
-    Dim lMode           As Long
     Dim hFind           As Long
     Dim uData           As WIN32_FIND_DATA
     Dim aTime(0 To 7)   As Integer
     
-    lMode = SetErrorMode(SEM_FAILCRITICALERRORS)
-    hFind = FindFirstFile(StrPtr(sFile), VarPtr(uData))
-    Call SetErrorMode(lMode)
+    hFind = pvFindFirstFile(sFile, uData)
     If hFind <> INVALID_HANDLE_VALUE Then
         Call FindClose(hFind)
         Call FileTimeToSystemTime(uData.ftLastWriteTime, aTime(0))
@@ -3316,9 +3299,7 @@ Private Function pvGetFolderSize(sFolder As String) As Currency
     Dim sFile           As String
     Dim cTemp           As Currency
     
-    lMode = SetErrorMode(SEM_FAILCRITICALERRORS)
-    hFind = FindFirstFile(StrPtr(PathCombine(sFolder, "*.*")), VarPtr(uData))
-    Call SetErrorMode(lMode)
+    hFind = pvFindFirstFile(PathCombine(sFolder, "*.*"), uData)
     If hFind <> INVALID_HANDLE_VALUE Then
         Do
             sFile = Left$(uData.cFileName, InStr(uData.cFileName, Chr$(0)) - 1)
@@ -3372,6 +3353,17 @@ Private Function CLngLng(vValue As Variant) As Variant
     Const VT_I8 As Long = &H14
     Call VariantChangeType(CLngLng, vValue, 0, VT_I8)
 End Function
+
+Public Property Get At(vData As Variant, ByVal lIdx As Long, Optional sDefault As String) As String
+    On Error GoTo QH
+    At = sDefault
+    If IsArray(vData) Then
+        If LBound(vData) <= lIdx And lIdx <= UBound(vData) Then
+            At = vData(lIdx)
+        End If
+    End If
+QH:
+End Property
 #End If
 
 '=========================================================================
@@ -3440,10 +3432,13 @@ End Sub
 
 Private Sub m_oSocket_OnError(ByVal ErrorCode As Long, ByVal EventMask As UcsAsyncSocketEventMaskEnum)
     Const FUNC_NAME     As String = "m_oSocket_OnError"
+    Const WSAECONNABORTED As Long = 10053
     
     On Error GoTo EH
     #If ImplUseDebugLog Then
-        DebugLog MODULE_NAME, FUNC_NAME, m_oSocket.GetErrorDescription(ErrorCode) & " (" & ErrorCode & ")"
+        If ErrorCode <> WSAECONNABORTED Then
+            DebugLog MODULE_NAME, FUNC_NAME, m_oSocket.GetErrorDescription(ErrorCode) & " (" & ErrorCode & ")"
+        End If
     #End If
     pvParent.frCloseConnection Me
     Exit Sub
