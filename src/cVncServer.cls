@@ -95,6 +95,11 @@ Private Const STGM_WRITE                    As Long = 1
 Private Const STGM_CREATE                   As Long = &H1000
 '--- for WideCharToMultiByte
 Private Const CP_UTF8                       As Long = 65001
+'--- for SendInput
+Private Const KEYEVENTF_EXTENDEDKEY         As Long = 1
+Private Const KEYEVENTF_KEYUP               As Long = 2
+Private Const KEYEVENTF_UNICODE             As Long = 4
+Private Const INPUT_KEYBOARD                As Long = 1
 '--- for thunks
 Private Const MEM_COMMIT                    As Long = &H1000
 Private Const PAGE_EXECUTE_READWRITE        As Long = &H40
@@ -120,6 +125,8 @@ Private Declare Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As L
 Private Declare Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long) As Long
 '--- user32/gdi32
 Private Declare Sub mouse_event Lib "user32" (ByVal dwFlags As Long, ByVal dx As Long, ByVal dy As Long, ByVal cButtons As Long, ByVal dwExtraInfo As Long)
+Private Declare Function SendInput Lib "user32" (ByVal nInputs As Long, pInputs As Any, ByVal cbSize As Long) As Long
+Private Declare Function MapVirtualKey Lib "user32" Alias "MapVirtualKeyA" (ByVal uCode As Long, ByVal uMapType As Long) As Long
 Private Declare Function GetSystemMetrics Lib "user32" (ByVal nIndex As Long) As Long
 Private Declare Function RedrawWindow Lib "user32" (ByVal hWnd As Long, lprcUpdate As Any, ByVal hrgnUpdate As Long, ByVal fuRedraw As Long) As Long
 Private Declare Function OpenInputDesktop Lib "user32" (ByVal dwFlags As Long, ByVal fInherit As Boolean, ByVal dwDesiredAccess As Long) As Long
@@ -201,6 +208,16 @@ Private Type WIN32_FIND_DATA
     cAlternate          As String * 14
 End Type
 Private Const sizeof_WIN32_FIND_DATA As Long = 592
+
+Private Type KEYBOARD_INPUT
+   dwType               As Long
+   wVk                  As Integer
+   wScan                As Integer
+   dwFlags              As Long
+   dwTime               As Long
+   dwExtraInfo          As Long
+   dwPadding            As Currency
+End Type
 
 '=========================================================================
 ' Protocol enums and types
@@ -608,7 +625,6 @@ Private Type UcsTightTransfer
     Flags               As Long
     ModificationTime    As Currency
 End Type
-
 
 '=========================================================================
 ' Error handling
@@ -1119,6 +1135,9 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
             Call CopyMemory(m_uClientKeyEvent, .Data(.Pos), sizeof_RfbClientKeyEvent)
             m_uClientKeyEvent.Key = pvNetworkLong(m_uClientKeyEvent.Key)
             .Pos = .Pos + sizeof_RfbClientKeyEvent
+            If Not pvHandleKeyEvent(m_uClientKeyEvent) Then
+                GoTo QH
+            End If
         Case rfbMsgPointerEvent
             If .Size - .Pos < sizeof_RfbClientPointerEvent Then
                 GoTo QH
@@ -1148,6 +1167,9 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 Call CopyMemory(m_uClientCutText.Text(0), .Data(.Pos + sizeof_RfbClientCutText), m_uClientCutText.Length)
             End If
             .Pos = .Pos + sizeof_RfbClientCutText + m_uClientCutText.Length
+            If Not pvHandleCutEvent(m_uClientCutText) Then
+                GoTo QH
+            End If
         Case rfbMsgFileTransfer
             If .Size - .Pos < sizeof_RfbFileTransfer Then
                 GoTo QH
@@ -1331,6 +1353,72 @@ EH:
     PrintError FUNC_NAME
 End Function
 
+Private Function pvHandleKeyEvent(uEvent As RfbClientKeyEvent) As Boolean
+    Const FUNC_NAME     As String = "pvHandleKeyEvent"
+    Const UNICODE_FLAG  As Long = &H1000000
+    Dim uInput          As KEYBOARD_INPUT
+    Dim bExtended       As Boolean
+    
+    On Error GoTo EH
+    #If ImplUseDebugLog Then
+'        DebugLog MODULE_NAME, FUNC_NAME, "uEvent.Key=&H" & Hex$(uEvent.Key) & ", uEvent.DownFlag=" & uEvent.DownFlag
+    #End If
+    uInput.dwType = INPUT_KEYBOARD
+    If uEvent.DownFlag = 0 Then
+        uInput.dwFlags = KEYEVENTF_KEYUP
+    End If
+    If pvMapToVirtualKey(uEvent.Key, uInput.wVk, bExtended) Then
+        uInput.wScan = MapVirtualKey(uInput.wVk, 0)
+        If bExtended Then
+            uInput.dwFlags = uInput.dwFlags Or KEYEVENTF_EXTENDEDKEY
+        End If
+    ElseIf (uEvent.Key And UNICODE_FLAG) <> 0 Then
+        uInput.wScan = uEvent.Key And Not UNICODE_FLAG
+        uInput.dwFlags = uInput.dwFlags Or KEYEVENTF_UNICODE
+    Else
+        Select Case uEvent.Key
+        Case 32 To 126, 160 To 255
+            uInput.wScan = uEvent.Key
+            uInput.dwFlags = uInput.dwFlags Or KEYEVENTF_UNICODE
+        End Select
+    End If
+    Call SendInput(1, uInput, LenB(uInput))
+    '--- success
+    pvHandleKeyEvent = True
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+End Function
+
+Private Function pvMapToVirtualKey(ByVal lKey As Long, nVk As Integer, bExtended As Boolean) As Boolean
+    Const STR_VK_MAP    As String = "&HFFE1;160|&HFFE2;161|&HFFE3;162|&HFFE4;163;1|&HFFE9;164|&HFFEA;165;1|&HFF51;37;1|&HFF52;38;1|&HFF53;39;1|&HFF54;40;1|&HFF09;9|&HFF08;8|&HFF0D;13|&HFF62;43|&HFF13;19|&HFF1B;27|&HFF0B;12|&HFFFF;46;1|&HFF50;36;1|&HFF55;33;1|&HFF56;34;1|&HFF57;35;1|&HFF60;41|&HFF61;44|&HFF63;45;1|&HFF6A;47|&HFF6B;3|&HFF80;32|&HFF89;9|&HFF8D;13;1|&HFF91;112|&HFF92;113|&HFF93;114|&HFF94;115|&HFF95;36|&HFF96;37|&HFF97;38|&HFF98;39|&HFF99;40|&HFF9A;33|&HFF9B;34|&HFF9C;35|&HFF9D;12|&HFF9E;45|&HFF9F;46|&HFFBD;187|&HFFAA;106|&HFFAB;107|&HFFAC;108|&HFFAD;109|&HFFAE;110|&HFFAF;111;1|&HFFB0;96|&HFFB1;97|&HFFB2;98|&HFFB3;99|&HFFB4;100|&HFFB5;101|&HFFB6;102|&HFFB7;103|&HFFB8;104|&HFFB9;105|&HFFBE;112|&HFFBF;113|&HFFC0;114|&HFFC1;115|&HFFC2;116|&HFFC3;117|&HFFC4;118|&HFFC5;119|&HFFC6;120|&HFFC7;121|&HFFC8;122|&HFFC9;123|&HFFCA;124|&HFFCB;125|&HFFCC;126|&HFFCD;127|&HFFCE;128|&HFFCF;129|&HFFD0;130|&HFFD1;131|&HFFD2;132|&HFFD3;133|&HFFD4;134|&HFFD5;135|&HFFEB;91|&HFFEC;92|&HFF67;93"
+    Static vMap         As Variant
+    Dim vElem           As Variant
+    Dim vSplit          As Variant
+    Dim lIdx            As Long
+    
+    If Not IsArray(vMap) Then
+        vSplit = Split(STR_VK_MAP, "|")
+        ReDim vMap(0 To UBound(vSplit)) As Variant
+        For lIdx = 0 To UBound(vSplit)
+            vElem = Split(vSplit(lIdx), ";")
+            If UBound(vElem) >= 2 Then
+                vMap(lIdx) = Array(CLng(vElem(0)), CInt(vElem(1)), CBool(vElem(2)))
+            Else
+                vMap(lIdx) = Array(CLng(vElem(0)), CInt(vElem(1)), False)
+            End If
+        Next
+    End If
+    For Each vElem In vMap
+        If lKey = vElem(0) Then
+            nVk = vElem(1)
+            bExtended = vElem(2)
+            pvMapToVirtualKey = True
+            Exit For
+        End If
+    Next
+End Function
+
 Private Function pvHandlePointerEvent(ByVal lWidth As Long, ByVal lHeight As Long, uEvent As RfbClientPointerEvent) As Boolean
     Dim LNG_BUTTON1     As Long
     Const LNG_BUTTON2   As Long = 2 ^ 1
@@ -1373,6 +1461,19 @@ Private Function pvHandlePointerEvent(ByVal lWidth As Long, ByVal lHeight As Lon
     pvHandlePointerEvent = True
 End Function
 
+Private Function pvHandleCutEvent(uEvent As RfbClientCutText) As Boolean
+    Const FUNC_NAME     As String = "pvHandleCutEvent"
+    
+    On Error GoTo EH
+    Clipboard.Clear
+    Clipboard.SetText Replace(StrConv(uEvent.Text, vbUnicode), vbLf, vbCrLf)
+    '--- success
+    pvHandleCutEvent = True
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+End Function
+
 '= file transfer =========================================================
 
 Private Function pvSendFileTransfer( _
@@ -1407,61 +1508,6 @@ Private Function pvSendFileTransfer( _
         '--- succees (or failure)
         pvSendFileTransfer = pvBufferSendAsync(uOutput)
     End If
-End Function
-
-Private Function pvSendFileTransferDirContent(uOutput As UcsBuffer, sFolder As String) As Boolean
-    Const FUNC_NAME     As String = "pvSendFileTransferDirContent"
-    Const offsetof_cFileName As Long = sizeof_WIN32_FIND_DATA - 2 * MAX_PATH - 2 * 14
-    Dim hFind           As Long
-    Dim uData           As WIN32_FIND_DATA
-    Dim baData()        As Byte
-    Dim sFile           As String
-    Dim lBufferSize     As Long
-    Dim bDelaySend      As Boolean
-    
-    On Error GoTo EH
-    hFind = pvFindFirstFile(PathCombine(sFolder, "*.*"), uData)
-    If hFind = INVALID_HANDLE_VALUE Then
-        If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory) Then
-            GoTo QH
-        End If
-    Else
-        lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
-        baData = StrConv(sFolder, vbFromUnicode)
-        If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory, Ptr:=pvArrayPtr(baData), Size:=pvArraySize(baData)) Then
-            GoTo QH
-        End If
-        Do
-            sFile = Left$(uData.cFileName, InStr(uData.cFileName, Chr$(0)) - 1)
-            If sFile <> "." And sFile <> ".." Then
-                ReDim baData(0 To offsetof_cFileName + Len(sFile) - 1) As Byte
-                Call CopyMemory(baData(0), uData, offsetof_cFileName)
-                Call CopyMemory(baData(offsetof_cFileName), ByVal sFile, Len(sFile))
-                If uOutput.Size > uOutput.Pos + lBufferSize Then
-                    bDelaySend = m_oSocket.HasPendingEvent
-                Else
-                    bDelaySend = True
-                End If
-                If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory, Ptr:=pvArrayPtr(baData), Size:=pvArraySize(baData), DelaySend:=bDelaySend) Then
-                    GoTo QH
-                End If
-            End If
-        Loop While FindNextFile(hFind, VarPtr(uData)) <> 0
-        '--- end of transfer
-        If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket) Then
-            GoTo QH
-        End If
-    End If
-    '--- success
-    pvSendFileTransferDirContent = True
-QH:
-    If hFind <> INVALID_HANDLE_VALUE And hFind <> 0 Then
-        Call FindClose(hFind)
-    End If
-    Exit Function
-EH:
-    PrintError FUNC_NAME
-    Resume QH
 End Function
 
 Private Function pvSendFileTransferFileContent(uOutput As UcsBuffer, pStream As stdole.IUnknown, sArchiveFile As String, pChecksums As stdole.IUnknown) As Boolean
@@ -1524,6 +1570,7 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
     Const STR_TYPES     As String = "0|DirContentRequest|DirPacket|FileTransferRequest|FileHeader|FilePacket|EndOfFile|AbortFileTransfer|FileTransferOffer|FileAcceptHeader|Command|CommandReturn|FileChecksums|13|FileTransferAccess|FileTransferSessionStart|FileTransferSessionEnd|FileTransferProtocolVersion"
     Const FORMAT_FILEDATETIME As String = "mm\/dd\/yyyy hh:nn"
     Const ERROR_VALUE   As Currency = -0.0001
+    Const offsetof_cFileName As Long = sizeof_WIN32_FIND_DATA - 2 * MAX_PATH - 2 * 14
     Dim sPath           As String
     Dim baBuffer()      As Byte
     Dim lSize           As Long
@@ -1533,6 +1580,11 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
     Dim cStreamSize     As Currency
     Dim uStreamSize     As LARGE_INTEGER
     Dim sTemp           As String
+    Dim hFind           As Long
+    Dim uData           As WIN32_FIND_DATA
+    Dim sFile           As String
+    Dim lBufferSize     As Long
+    Dim bDelaySend      As Boolean
     
     On Error GoTo EH
     If uMsg.ContentType <> rfbFtpFilePacket And uMsg.ContentType <> rfbFtpFileChecksums Then
@@ -1578,8 +1630,38 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
             Case "Network Favorites\"
                 sPath = GetSpecialFolder(CSIDL_NETHOOD) & "\"
             End Select
-            If Not pvSendFileTransferDirContent(uOutput, sPath) Then
-                GoTo QH
+            hFind = pvFindFirstFile(PathCombine(sPath, "*.*"), uData)
+            If hFind = INVALID_HANDLE_VALUE Then
+                If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory) Then
+                    GoTo QH
+                End If
+            Else
+                lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
+                baBuffer = StrConv(sPath, vbFromUnicode)
+                If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory, Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer)) Then
+                    GoTo QH
+                End If
+                ReDim baBuffer(0 To sizeof_WIN32_FIND_DATA) As Byte
+                Do
+                    sFile = Left$(uData.cFileName, InStr(uData.cFileName, Chr$(0)) - 1)
+                    If sFile <> "." And sFile <> ".." Then
+                        Call CopyMemory(baBuffer(0), uData, offsetof_cFileName)
+                        Call CopyMemory(baBuffer(offsetof_cFileName), ByVal sFile, Len(sFile))
+                        If uOutput.Size > uOutput.Pos + lBufferSize Then
+                            bDelaySend = m_oSocket.HasPendingEvent
+                        Else
+                            bDelaySend = True
+                        End If
+                        If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory, _
+                                Ptr:=pvArrayPtr(baBuffer), Size:=offsetof_cFileName + Len(sFile), DelaySend:=bDelaySend) Then
+                            GoTo QH
+                        End If
+                    End If
+                Loop While FindNextFile(hFind, VarPtr(uData)) <> 0
+                '--- end of transfer
+                If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket) Then
+                    GoTo QH
+                End If
             End If
         Case Else
             #If ImplUseDebugLog Then
