@@ -769,10 +769,17 @@ End Function
 Private Function pvSendSecurityTypes(uOutput As UcsBuffer) As Boolean
     pvBufferWriteLong uOutput, 3
     pvBufferWriteLong uOutput, IIf(LenB(m_sPassword) <> 0, rfbSecVnc, rfbSecNone)
-    pvBufferWriteLong uOutput, IIf(LenB(m_sPassword) <> 0, rfbSecUltraVnc_MsLogonIIAuth, rfbSecUltraVnc)
+    pvBufferWriteLong uOutput, rfbSecUltraVnc
     pvBufferWriteLong uOutput, rfbSecTight
     '--- success (or failure)
     pvSendSecurityTypes = pvBufferSendAsync(uOutput)
+End Function
+
+Private Function pvSendSingleSecurityType(uOutput As UcsBuffer, ByVal eType As RfbSecurityTypeEnum) As Boolean
+    pvBufferWriteLong uOutput, 1
+    pvBufferWriteLong uOutput, eType
+    '--- success (or failure)
+    pvSendSingleSecurityType = pvBufferSendAsync(uOutput)
 End Function
 
 Private Function pvSendSecurityChallenge(uOutput As UcsBuffer, baChallenge() As Byte, baMod() As Byte, baPub() As Byte) As Boolean
@@ -878,6 +885,7 @@ Private Sub pvHandleReceive()
     Const FUNC_NAME     As String = "pvHandleReceive"
     Const SecurityResultOk As Long = 0
     Const SecurityResultFailed As Long = 1
+    Const SecurityResultContinue As Long = -1
     Dim baBuffer()      As Byte
     Dim baPassword()    As Byte
     Dim eSecurityType   As RfbSecurityTypeEnum
@@ -946,10 +954,19 @@ DoAuth:
                             m_eState = uscStaExpectSecurityTightResponse
                         End If
                     Case rfbSecUltraVnc
-                        If Not pvSendSecurityResult(m_uSendBuffer(ucsChaFrame), SecurityResultOk) Then
-                            GoTo QH
+                        If LenB(m_sPassword) <> 0 Then
+                            If Not pvSendSecurityResult(m_uSendBuffer(ucsChaFrame), SecurityResultContinue) Then
+                                GoTo QH
+                            End If
+                            If Not pvSendSingleSecurityType(m_uSendBuffer(ucsChaFrame), rfbSecUltraVnc_MsLogonIIAuth) Then
+                                GoTo QH
+                            End If
+                        Else
+                            If Not pvSendSecurityResult(m_uSendBuffer(ucsChaFrame), SecurityResultOk) Then
+                                GoTo QH
+                            End If
+                            m_eState = uscStaExpectClientInit
                         End If
-                        m_eState = uscStaExpectClientInit
                     Case rfbSecUltraVnc_MsLogonIIAuth
                         If Not pvCryptoDhMakeKey(m_baSecurityChallenge, baSecurityPub, baSecurityGen, m_baSecurityModulus) Then
                             GoTo QH
@@ -1055,6 +1072,7 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
     
     On Error GoTo EH
     With uInput
+'        DebugLog MODULE_NAME, FUNC_NAME, "Message=" & .Data(.Pos)
         Select Case .Data(.Pos)
         Case rfbMsgSetPixelFormat
             If .Size - .Pos < UcsClientSetPixelFormatSize Then
