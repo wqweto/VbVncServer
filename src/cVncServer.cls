@@ -1939,17 +1939,17 @@ Attribute TimerProc.VB_MemberFlags = "40"
             GoTo QH
         End If
     Next
-    m_uCaptureFrame.NumTiles = 0
-    m_uCaptureFrame.NumMoveRects = 0
-    m_uCaptureFrame.PointerShapeBufferSize = 0
-    If Not pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
-        GoTo QH
+    If Not m_uCaptureCtx.Duplication Is Nothing Then
+        m_uCaptureFrame.NumTiles = 0
+        m_uCaptureFrame.NumMoveRects = 0
+        m_uCaptureFrame.PointerShapeBufferSize = 0
+        If Not pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
+            GoTo QH
+        End If
     End If
-    If m_uCaptureFrame.NumTiles + m_uCaptureFrame.NumMoveRects > 0 Or m_uCaptureFrame.PointerShapeBufferSize > 0 Then
-        For Each oConn In m_cConnections
-            oConn.frNotifySendFrame m_uCaptureFrame
-        Next
-    End If
+    For Each oConn In m_cConnections
+        oConn.frNotifySendFrame m_uCaptureFrame
+    Next
     For Each oConn In m_cConnections
         oConn.frNotifyAfterSendFrame
     Next
@@ -1978,6 +1978,10 @@ Friend Function frNotifySendFrame(uCaptureFrame As UcsCaptureFrame) As Boolean
     If m_uClientFramebufferUpdate.MessageType = 0 Then
         GoTo QH
     ElseIf Not pvHasSupport(rfbEncRaw) Then
+        If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
+            GoTo QH
+        End If
+    ElseIf uCaptureFrame.NumTiles + uCaptureFrame.NumMoveRects + uCaptureFrame.PointerShapeBufferSize = 0 Then
         If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
             GoTo QH
         End If
@@ -2107,33 +2111,32 @@ Continue:
         pDXGIDevice.SetGPUThreadPriority 7
         pDXGIDevice.SetMaximumFrameLatency 1
         hResult = pOutput.DuplicateOutput(pD3D11Device, .Duplication)
-        If hResult < 0 Then
-            Err.Raise hResult, "IDXGIOutput1.DuplicateOutput"
+        If hResult >= 0 Then
+            .Duplication.GetDesc uDuplDesc
+            .InSystemMemory = (uDuplDesc.DesktopImageInSystemMemory <> 0)
+            Debug.Assert uDuplDesc.ModeDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM
+            With uTextureDesc
+                .Width = uCtx.Width
+                .Height = uCtx.Height
+                .MipLevels = 1
+                .ArraySize = 1
+                .Format = uDuplDesc.ModeDesc.Format
+                .SampleDesc.Count = 1
+                .SampleDesc.Quality = 0
+                .Usage = D3D11_USAGE_STAGING
+                .BindFlags = 0
+                .CPUAccessFlags = D3D11_CPU_ACCESS_READ
+                .MiscFlags = 0
+            End With
+            Set .StageTexture = pD3D11Device.CreateTexture2D(uTextureDesc, ByVal 0)
+            hResult = .Context.Map(.StageTexture, 0, D3D11_MAP_READ, 0, uResource)
+            If hResult < 0 Then
+                Err.Raise hResult, "ID3D11DeviceContext.Map"
+            End If
+            .Pitch = uResource.RowPitch
+            .Stride = uResource.RowPitch / IIf(uDuplDesc.ModeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT, 8, 4)
+            .Context.Unmap .StageTexture, 0
         End If
-        .Duplication.GetDesc uDuplDesc
-        .InSystemMemory = (uDuplDesc.DesktopImageInSystemMemory <> 0)
-        Debug.Assert uDuplDesc.ModeDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM
-        With uTextureDesc
-            .Width = uCtx.Width
-            .Height = uCtx.Height
-            .MipLevels = 1
-            .ArraySize = 1
-            .Format = uDuplDesc.ModeDesc.Format
-            .SampleDesc.Count = 1
-            .SampleDesc.Quality = 0
-            .Usage = D3D11_USAGE_STAGING
-            .BindFlags = 0
-            .CPUAccessFlags = D3D11_CPU_ACCESS_READ
-            .MiscFlags = 0
-        End With
-        Set .StageTexture = pD3D11Device.CreateTexture2D(uTextureDesc, ByVal 0)
-        hResult = .Context.Map(.StageTexture, 0, D3D11_MAP_READ, 0, uResource)
-        If hResult < 0 Then
-            Err.Raise hResult, "ID3D11DeviceContext.Map"
-        End If
-        .Pitch = uResource.RowPitch
-        .Stride = uResource.RowPitch / IIf(uDuplDesc.ModeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT, 8, 4)
-        .Context.Unmap .StageTexture, 0
     End With
     '--- success
     pvCaptureInit = True
