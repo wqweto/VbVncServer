@@ -26,7 +26,7 @@ DefObj A-Z
 Private Const MODULE_NAME As String = "cVncServer"
 
 #Const ImplZlib = (VNC_NOZLIB = 0)
-#Const ImplHistograms = (VNC_NOHISTOGRAMS = 0)
+#Const ImplHistograms = (VNC_HISTOGRAMS = 1)
 #Const ImplNoIdeProtection = (MST_NO_IDE_PROTECTION <> 0)
 #Const ImplUseDebugLog = (USE_DEBUG_LOG <> 0)
 #Const ImplUseShared = (VNC_USESHARED <> 0)
