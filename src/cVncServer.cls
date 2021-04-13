@@ -180,6 +180,8 @@ Private Declare Function IPropertyBag2_Write_Proxy Lib "windowscodecs" (ByVal pP
     Private Declare Function GetEnvironmentVariable Lib "kernel32" Alias "GetEnvironmentVariableA" (ByVal lpName As String, ByVal lpBuffer As String, ByVal nSize As Long) As Long
     Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnvironmentVariableA" (ByVal lpName As String, ByVal lpValue As String) As Long
 #End If
+Private Declare Function D3D11CreateDevice Lib "d3d11" (ByVal pAdapter As IUnknown, ByVal DriverType As D3D_DRIVER_TYPE, ByVal Software As Long, ByVal Flags As D3D11_CREATE_DEVICE_FLAG, pFeatureLevels As Any, ByVal FeatureLevels As Long, ByVal SDKVersion As Long, ppDevice As ID3D11Device, pFeatureLevel As D3D_FEATURE_LEVEL, ppImmediateContext As ID3D11DeviceContext) As VBHRESULT
+Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBGUID, ppFactory As IDXGIFactory1) As VBHRESULT
 
 Private Type BLOBHEADER
     bType               As Byte
@@ -2009,6 +2011,8 @@ QH:
 End Function
 
 Private Function pvCaptureEnumDevices() As Collection
+    Const FUNC_NAME     As String = "pvCaptureEnumDevices"
+    Dim hResult         As VBHRESULT
     Dim pFactory        As IDXGIFactory1
     Dim lIdx            As Long
     Dim lJdx            As Long
@@ -2017,8 +2021,12 @@ Private Function pvCaptureEnumDevices() As Collection
     Dim uAdapterDesc    As DXGI_ADAPTER_DESC
     Dim uOutputDesc     As DXGI_OUTPUT_DESC
     
+    On Error GoTo EH
     Set pvCaptureEnumDevices = New Collection
-    Set pFactory = CreateDXGIFactory1(IIDFromString(szIID_IDXGIFactory1))
+    hResult = CreateDXGIFactory1(IIDFromString(szIID_IDXGIFactory1), pFactory)
+    If hResult < 0 Then
+        Err.Raise hResult, "CreateDXGIFactory1"
+    End If
     For lIdx = 0 To 100
         If pFactory.EnumAdapters1(lIdx, pAdapter) < 0 Then
             Exit For
@@ -2033,6 +2041,9 @@ Private Function pvCaptureEnumDevices() As Collection
                 Replace(uAdapterDesc.Description, vbNullChar, vbNullString))
         Next
     Next
+    Exit Function
+EH:
+    PrintError FUNC_NAME
 End Function
 
 Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As String, ByVal lTimeout As Long) As Boolean
@@ -2067,7 +2078,12 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
         Set .Duplication = Nothing
         Set .StageTexture = Nothing
         Set .Context = Nothing
-        Set pFactory = CreateDXGIFactory1(IIDFromString(szIID_IDXGIFactory1))
+        .Width = Screen.Width / Screen.TwipsPerPixelX
+        .Height = Screen.Height / Screen.TwipsPerPixelY
+        hResult = CreateDXGIFactory1(IIDFromString(szIID_IDXGIFactory1), pFactory)
+        If hResult < 0 Then
+            Err.Raise hResult, "CreateDXGIFactory1"
+        End If
         For lIdx = 0 To 100
             hResult = pFactory.EnumAdapters1(lIdx, pAdapter)
             If hResult = DXGI_ERROR_NOT_FOUND Then
@@ -3313,10 +3329,12 @@ Private Sub m_oSocket_OnAccept()
         GoTo QH
     End If
     If m_cConnections.Count = 0 Then
-        vDevice = pvCaptureEnumDevices().Item(1)
-        If Not pvCaptureInit(m_uCaptureCtx, vDevice(0), 1) Then
-            GoTo QH
-        End If
+        With pvCaptureEnumDevices()
+            If .Count > 0 Then
+                vDevice = .Item(1)
+            End If
+        End With
+        pvCaptureInit m_uCaptureCtx, At(vDevice, 0), 1
     End If
     Set oConn = New cVncServer
     m_cConnections.Add oConn, "#" & ObjPtr(oConn)
