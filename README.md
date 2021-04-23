@@ -44,8 +44,8 @@ Private Sub Form_Load()
 End Sub
 ```
 
-The snippet above allows optionally starting the built-in in your LOB application VNC server by configuring a listening port through the `MYLOBAPP_VNC_PORT` environment variable and optinally securing it with a password through the `MYLOBAPP_VNC_PASSWORD` environment variable.
+The snippet above allows optionally starting the built-in in your LOB application VNC server by configuring a listening port through the `MYLOBAPP_VNC_PORT` environment variable and optionally securing it with a password through the `MYLOBAPP_VNC_PASSWORD` environment variable.
 
-Please when copy/pasting the sample code  use common sense and change the prefix of these environment variables to your LOB application name.
+Please when copy/pasting the sample code  use common sense and change the prefix of these environment variables to include your LOB application name.
 
-To reduce footprint on final executable you can optionally exclude `cZipArchive.cls` from your project by using `VNC_NOZLIB = 1` in conditional compilation settings.
+To reduce footprint on final executable you can optionally exclude `cZipArchive.cls` from your project by using `VNC_NOZLIB = 1` in conditional compilation settings which will remove (or reduce) some of the server functionalities.
