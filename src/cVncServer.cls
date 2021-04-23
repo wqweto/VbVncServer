@@ -751,6 +751,21 @@ Friend Sub frCloseConnection(oConn As cVncServer)
     If m_cConnections.Count = 0 Then
         m_uCaptureCtx = uEmpty
         Set m_pTimer = Nothing
+        m_oSocket.AsyncSelect ucsSfdAll
+    End If
+End Sub
+
+Friend Sub frExclusiveConnection(oConn As cVncServer)
+    Dim lIdx            As Long
+    
+    For lIdx = m_cConnections.Count To 1 Step -1
+        If Not m_cConnections.Item(lIdx) Is oConn Then
+            m_cConnections.Remove lIdx
+        End If
+    Next
+    If m_cConnections.Count > 0 Then
+        '--- pause receiving OnAccept
+        m_oSocket.AsyncSelect ucsSfdAll And Not ucsSfdAccept
     End If
 End Sub
 
@@ -875,7 +890,7 @@ Private Function pvSendEmptyFramebufferUpdate(uOutput As UcsBuffer) As Boolean
     pvSendEmptyFramebufferUpdate = pvBufferSendAsync(uOutput)
 End Function
 
-Private Sub pvHandleReceive()
+Private Sub pvHandleReceive(uOutput As UcsBuffer)
     Const FUNC_NAME     As String = "pvHandleReceive"
     Const SecurityResultOk As Long = 0
     Const SecurityResultFailed As Long = 1
@@ -906,7 +921,7 @@ Private Sub pvHandleReceive()
                     End If
                     '--- ignore client protocol version
                     .Pos = .Pos + sizeof_PROTOCOL_VERSION
-                    If Not pvSendSecurityTypes(m_uSendBuffer(ucsChaFrame)) Then
+                    If Not pvSendSecurityTypes(uOutput) Then
                         GoTo QH
                     End If
                     m_eState = uscStaExpectSecurityHandshake
@@ -918,26 +933,26 @@ DoAuth:
                     Select Case eSecurityType
                     Case rfbSecNone
                         If LenB(m_sPassword) <> 0 Then
-                            pvSendSecurityResult m_uSendBuffer(ucsChaFrame), SecurityResultFailed, "Password required"
+                            pvSendSecurityResult uOutput, SecurityResultFailed, "Password required"
                             GoTo QH
                         End If
-                        If Not pvSendSecurityResult(m_uSendBuffer(ucsChaFrame), SecurityResultOk) Then
+                        If Not pvSendSecurityResult(uOutput, SecurityResultOk) Then
                             GoTo QH
                         End If
                         m_eState = uscStaExpectClientInit
                     Case rfbSecVnc
                         m_baSecurityChallenge = pvCryptoRandomBytes(LNG_CHALLENGE_SIZE)
                         Erase baBuffer
-                        If Not pvSendSecurityChallenge(m_uSendBuffer(ucsChaFrame), m_baSecurityChallenge, baBuffer, baBuffer) Then
+                        If Not pvSendSecurityChallenge(uOutput, m_baSecurityChallenge, baBuffer, baBuffer) Then
                             GoTo QH
                         End If
                         m_eState = uscStaExpectSecurityVncResponse
                     Case rfbSecTight
-                        If Not pvSendTightSecurityType(m_uSendBuffer(ucsChaFrame)) Then
+                        If Not pvSendTightSecurityType(uOutput) Then
                             GoTo QH
                         End If
                         If LenB(m_sPassword) = 0 Then
-                            If Not pvSendSecurityResult(m_uSendBuffer(ucsChaFrame), SecurityResultOk) Then
+                            If Not pvSendSecurityResult(uOutput, SecurityResultOk) Then
                                 GoTo QH
                             End If
                             m_eState = uscStaExpectClientInit
@@ -946,14 +961,14 @@ DoAuth:
                         End If
                     Case rfbSecUltraVnc
                         If LenB(m_sPassword) <> 0 Then
-                            If Not pvSendSecurityResult(m_uSendBuffer(ucsChaFrame), SecurityResultContinue) Then
+                            If Not pvSendSecurityResult(uOutput, SecurityResultContinue) Then
                                 GoTo QH
                             End If
-                            If Not pvSendSingleSecurityType(m_uSendBuffer(ucsChaFrame), rfbSecVnc) Then
+                            If Not pvSendSingleSecurityType(uOutput, rfbSecVnc) Then
                                 GoTo QH
                             End If
                         Else
-                            If Not pvSendSecurityResult(m_uSendBuffer(ucsChaFrame), SecurityResultOk) Then
+                            If Not pvSendSecurityResult(uOutput, SecurityResultOk) Then
                                 GoTo QH
                             End If
                             m_eState = uscStaExpectClientInit
@@ -981,18 +996,21 @@ DoAuth:
                         GoTo QH
                     End If
                     If Not pvArrayEqual(.Data, .Pos, LNG_CHALLENGE_SIZE, baPassword) Then
-                        pvSendSecurityResult m_uSendBuffer(ucsChaFrame), SecurityResultFailed, "Wrong password"
+                        pvSendSecurityResult uOutput, SecurityResultFailed, "Wrong password"
                         GoTo QH
                     End If
                     .Pos = .Pos + LNG_CHALLENGE_SIZE
-                    If Not pvSendSecurityResult(m_uSendBuffer(ucsChaFrame), SecurityResultOk) Then
+                    If Not pvSendSecurityResult(uOutput, SecurityResultOk) Then
                         GoTo QH
                     End If
                     m_eState = uscStaExpectClientInit
                 Case uscStaExpectClientInit
-                    '--- ignore shared flag
+                    '--- shared flag
+                    If .Data(.Pos) = 0 Then
+                        pvParent.frExclusiveConnection Me
+                    End If
                     .Pos = .Pos + 1
-                    If Not pvSendServerInit(m_uSendBuffer(ucsChaFrame), pvParent.CaptureWidth, pvParent.CaptureHeight, STR_APP_NAME) Then
+                    If Not pvSendServerInit(uOutput, pvParent.CaptureWidth, pvParent.CaptureHeight, STR_APP_NAME) Then
                         GoTo QH
                     End If
                     m_eState = uscStaExpectClientMessage
@@ -1937,14 +1955,12 @@ Attribute TimerProc.VB_MemberFlags = "40"
     On Error GoTo EH
     Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
     For Each oConn In m_cConnections
-        If Not oConn.frNotifyBeforeSendFrame() Then
-            GoTo QH
-        End If
+        oConn.frNotifyBeforeSendFrame
     Next
+    m_uCaptureFrame.NumTiles = 0
+    m_uCaptureFrame.NumMoveRects = 0
+    m_uCaptureFrame.PointerShapeBufferSize = 0
     If Not m_uCaptureCtx.Duplication Is Nothing Then
-        m_uCaptureFrame.NumTiles = 0
-        m_uCaptureFrame.NumMoveRects = 0
-        m_uCaptureFrame.PointerShapeBufferSize = 0
         If Not pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
             GoTo QH
         End If
@@ -1969,10 +1985,9 @@ Friend Function frNotifyBeforeSendFrame() As Boolean
         If Not pvBufferSendAsync(m_uSendBuffer(eChannel)) Then
             GoTo QH
         End If
-    Else
-        '--- success
-        frNotifyBeforeSendFrame = True
     End If
+    '--- success
+    frNotifyBeforeSendFrame = True
 QH:
 End Function
 
@@ -2593,7 +2608,7 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
                 End If
             End If
             If m_oSocket.AvailableBytes > 0 Then
-                pvHandleReceive
+                pvHandleReceive uOutput
                 If lBytesPerPixel <> m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8 Then
                     lBytesPerPixel = Clamp(m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8, 1, 4)
                     If lBytesPerPixel = 1 Or lBytesPerPixel = 2 Then
@@ -3350,7 +3365,13 @@ EH:
 End Sub
 
 Private Sub m_oSocket_OnReceive()
-    pvHandleReceive
+    Const FUNC_NAME     As String = "m_oSocket_OnReceive"
+    
+    On Error GoTo EH
+    pvHandleReceive m_uSendBuffer(ucsChaFrame)
+    Exit Sub
+EH:
+    PrintError FUNC_NAME
 End Sub
 
 Private Sub m_oSocket_OnSend()
@@ -3374,7 +3395,9 @@ Private Sub m_oSocket_OnClose()
     Const FUNC_NAME     As String = "m_oSocket_OnClose"
     
     On Error GoTo EH
-    pvParent.frCloseConnection Me
+    If m_lParentWeakRef <> 0 Then
+        pvParent.frCloseConnection Me
+    End If
     Exit Sub
 EH:
     PrintError FUNC_NAME
@@ -3390,7 +3413,9 @@ Private Sub m_oSocket_OnError(ByVal ErrorCode As Long, ByVal EventMask As UcsAsy
             DebugLog MODULE_NAME, FUNC_NAME, m_oSocket.GetErrorDescription(ErrorCode) & " (" & ErrorCode & ")"
         End If
     #End If
-    pvParent.frCloseConnection Me
+    If m_lParentWeakRef <> 0 Then
+        pvParent.frCloseConnection Me
+    End If
     Exit Sub
 EH:
     PrintError FUNC_NAME
