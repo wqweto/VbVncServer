@@ -52,6 +52,8 @@ Private Const MOUSEEVENTF_MIDDLEUP          As Long = &H40
 Private Const MOUSEEVENTF_WHEEL             As Long = &H800
 Private Const MOUSEEVENTF_ABSOLUTE          As Long = &H8000&
 '--- for GetSystemMetrics
+Private Const SM_CXSCREEN                   As Long = 0
+Private Const SM_CYSCREEN                   As Long = 1
 Private Const SM_SWAPBUTTON                 As Long = 23
 '--- for RedrawWindow
 Private Const RDW_INVALIDATE                As Long = &H1
@@ -237,6 +239,7 @@ Private Enum RfbMessageEnum
     rfbMsgKeyEvent = 4
     rfbMsgPointerEvent = 5
     rfbMsgClientCutText = 6
+    rfbMsgSetSW = 10
     '--- server-side
     rfbMsgFramebufferUpdate = 0
     rfbMsgSetColorMapEntries = 1
@@ -244,6 +247,7 @@ Private Enum RfbMessageEnum
     rfbMsgServerCutText = 3
     '--- bidirectional
     rfbMsgFileTransfer = 7
+    rfbMsgSetDesktopSize = 251
     rfbMsgTightFileTransfer = 252 ' &HFC
     '--- tight file transfer
     rfbMsgTightCompressionSupportRequest = &HFC000100
@@ -341,6 +345,7 @@ Private Type RfbClientSetEncodings
     HasEncoding         As Long
     CompressionLevel    As Long
     JpegQualityLevel    As Long
+    NeedDesktopSizes    As Long
 End Type
 Private Const sizeof_RfbClientSetEncodings As Long = 4
 
@@ -530,6 +535,7 @@ Private Const LNG_CHALLENGE_SIZE    As Long = 16
 
 Private m_cConnections          As Collection
 Private m_sPassword             As String
+Private m_lDeviceIndex          As Long
 '--- client
 Private m_lParentWeakRef        As Long
 Private m_eState                As UcsProtocolStateEnum
@@ -572,6 +578,8 @@ End Type
 
 Private Type UcsCaptureContext
     DeviceName          As String
+    Left                As Long
+    Top                 As Long
     Width               As Long
     Height              As Long
     Timeout             As Long
@@ -650,6 +658,14 @@ Public Property Get Password() As String
     Password = m_sPassword
 End Property
 
+Public Property Get CaptureLeft() As Long
+    CaptureLeft = m_uCaptureCtx.Left
+End Property
+
+Public Property Get CaptureTop() As Long
+    CaptureTop = m_uCaptureCtx.Top
+End Property
+
 Public Property Get CaptureWidth() As Long
     CaptureWidth = m_uCaptureCtx.Width
 End Property
@@ -680,6 +696,14 @@ End Property
 
 Private Property Get pvHasSupport(ByVal eEncoding As RfbEncodingEnum) As Boolean
     pvHasSupport = (m_uClientEncodings.HasEncoding And pvGetEncodingBit(eEncoding)) <> 0
+End Property
+
+Private Property Let pvHasSupport(ByVal eEncoding As RfbEncodingEnum, ByVal bValue As Boolean)
+    If bValue Then
+        m_uClientEncodings.HasEncoding = m_uClientEncodings.HasEncoding Or pvGetEncodingBit(eEncoding)
+    Else
+        m_uClientEncodings.HasEncoding = m_uClientEncodings.HasEncoding And Not pvGetEncodingBit(eEncoding)
+    End If
 End Property
 
 '=========================================================================
@@ -890,6 +914,37 @@ Private Function pvSendEmptyFramebufferUpdate(uOutput As UcsBuffer) As Boolean
     pvSendEmptyFramebufferUpdate = pvBufferSendAsync(uOutput)
 End Function
 
+Private Function pvSendDesktopSize(uOutput As UcsBuffer, ByVal lWidth As Long, ByVal lHeight As Long) As Boolean
+    Dim bExtended       As Boolean
+    Dim uUpdate         As RfbServerFramebufferUpdate
+    Dim uRectangle      As RfbServerRectangle
+    
+    bExtended = pvHasSupport(rfbEncPsExtendedDesktopSize)
+    With uUpdate
+        .MessageType = rfbMsgFramebufferUpdate
+        .NumberOfRectangles = pvNetworkShort(1)
+    End With
+    With uRectangle
+        .Width = pvNetworkShort(lWidth)
+        .Height = pvNetworkShort(lHeight)
+        .EncodingType = pvNetworkLong(IIf(bExtended, rfbEncPsExtendedDesktopSize, rfbEncPsDesktopSize))
+    End With
+    pvBufferWriteBlob uOutput, VarPtr(uUpdate), sizeof_RfbServerFramebufferUpdate
+    pvBufferWriteBlob uOutput, VarPtr(uRectangle), sizeof_RfbServerRectangle
+    If bExtended Then
+        pvBufferWriteLong uOutput, pvNetworkLong(1), Size:=4
+        pvBufferWriteLong uOutput, 1, Size:=4
+        pvBufferWriteLong uOutput, 0, Size:=2
+        pvBufferWriteLong uOutput, 0, Size:=2
+        pvBufferWriteLong uOutput, lWidth, Size:=2
+        pvBufferWriteLong uOutput, lHeight, Size:=2
+        pvBufferWriteLong uOutput, 0, Size:=4
+        pvHasSupport(rfbEncPsExtendedDesktopSize) = False
+    End If
+    '--- success (or failure)
+    pvSendDesktopSize = pvBufferSendAsync(uOutput)
+End Function
+
 Private Sub pvHandleReceive(uOutput As UcsBuffer)
     Const FUNC_NAME     As String = "pvHandleReceive"
     Const SecurityResultOk As Long = 0
@@ -1078,9 +1133,10 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                     .HasEncoding = pvGetEncodingBit(rfbEncRaw)
                     .CompressionLevel = 0
                     .JpegQualityLevel = 0
+                    .NeedDesktopSizes = 0
                     For lIdx = 0 To .NumberOfEncodings - 1
                         .EncodingType(lIdx) = pvNetworkLong(.EncodingType(lIdx))
-                        .HasEncoding = .HasEncoding Or pvGetEncodingBit(.EncodingType(lIdx))
+                        pvHasSupport(.EncodingType(lIdx)) = True
                         Select Case .EncodingType(lIdx)
                         Case rfbEncPsCompressionLevel To rfbEncPsCompressionLevel + 9
                             .CompressionLevel = .EncodingType(lIdx) - rfbEncPsCompressionLevel + 1
@@ -1090,9 +1146,11 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                             If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpFileTransferProtocolVersion, rfbFtpProtocolVersion) Then
                                 GoTo QH
                             End If
+                        Case rfbEncPsExtendedDesktopSize, rfbEncPsDesktopSize
+                            .NeedDesktopSizes = 1
                         Case rfbEncRaw, rfbEncRRE, rfbEncCoRRE, rfbEncHextile, rfbEncZlibHextile, rfbEncUltra, rfbEncUltra2, rfbEncTRLE, rfbEncZRLE, _
                                 rfbEncHitachiZYWRLE, rfbEncJPEG, rfbEncJRLE, rfbEncJRLE2, rfbEncTightPNG, _
-                                rfbEncPsExtendedDesktopSize, rfbEncPsPointerPosition, rfbEncPsLastRect, rfbEncPsDesktopSize, rfbEncPsExtendedClipboard
+                                rfbEncPsPointerPosition, rfbEncPsLastRect, rfbEncPsExtendedClipboard
                             '--- do nothing
                         Case Else
                             #If ImplUseDebugLog Then
@@ -1140,7 +1198,7 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 .YPosition = pvNetworkShort(.YPosition)
             End With
             .Pos = .Pos + sizeof_RfbClientPointerEvent
-            If Not pvHandlePointerEvent(pvParent.CaptureWidth, pvParent.CaptureHeight, uPointerEvent) Then
+            If Not pvHandlePointerEvent(pvParent.CaptureLeft, pvParent.CaptureTop, uPointerEvent) Then
                 GoTo QH
             End If
         Case rfbMsgClientCutText
@@ -1326,9 +1384,26 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 '--- flush
                 .Pos = .Size
             End Select
-            If Not pvHandleTightTransfer(m_uSendBuffer(ucsChaFtp), uTightTransfer, baData) Then
+            If Not pvHandleTightFileTransfer(m_uSendBuffer(ucsChaFtp), uTightTransfer, baData) Then
                 GoTo QH
             End If
+        Case rfbMsgSetDesktopSize
+            If .Size - .Pos < 8 Then
+                GoTo QH
+            End If
+            '--- number of screens
+            lIdx = .Data(.Pos + 6)
+            If .Size - .Pos < 8 + lIdx * 16 Then
+                GoTo QH
+            End If
+            '--- ignore
+            .Pos = .Pos + 8 + lIdx * 16
+        Case rfbMsgSetSW
+            If .Size - .Pos < 6 Then
+                GoTo QH
+            End If
+            pvParent.frCaptureSetupDeviceIndex Rotate:=1
+            .Pos = .Pos + 6
         Case Else
             #If ImplUseDebugLog Then
                 DebugLog MODULE_NAME, FUNC_NAME, "Unknown client message (" & .Data(.Pos) & ")"
@@ -1411,15 +1486,19 @@ Private Function pvMapToVirtualKey(ByVal lKey As Long, nVk As Integer, bExtended
     Next
 End Function
 
-Private Function pvHandlePointerEvent(ByVal lWidth As Long, ByVal lHeight As Long, uEvent As RfbClientPointerEvent) As Boolean
+Private Function pvHandlePointerEvent(ByVal lLeft As Long, ByVal lTop As Long, uEvent As RfbClientPointerEvent) As Boolean
     Dim LNG_BUTTON1     As Long
     Const LNG_BUTTON2   As Long = 2 ^ 1
     Dim LNG_BUTTON3     As Long
     Const LNG_BUTTON4   As Long = 2 ^ 3
     Const LNG_BUTTON5   As Long = 2 ^ 4
+    Dim lWidth          As Long
+    Dim lHeight         As Long
     Dim lFlags          As Long
     Dim lWheel          As Long
     
+    lWidth = GetSystemMetrics(SM_CXSCREEN)
+    lHeight = GetSystemMetrics(SM_CYSCREEN)
     If GetSystemMetrics(SM_SWAPBUTTON) = 0 Then
         LNG_BUTTON1 = 2 ^ 0
         LNG_BUTTON3 = 2 ^ 2
@@ -1446,7 +1525,7 @@ Private Function pvHandlePointerEvent(ByVal lWidth As Long, ByVal lHeight As Lon
             lFlags = lFlags Or MOUSEEVENTF_WHEEL
             lWheel = -120
         End If
-        Call mouse_event(lFlags, .XPosition * 65535 \ (lWidth - 1), .YPosition * 65535 \ (lHeight - 1), lWheel, 0)
+        Call mouse_event(lFlags, (.XPosition + lLeft) * 65535 \ (lWidth - 1), (.YPosition + lTop) * 65535 \ (lHeight - 1), lWheel, 0)
     End With
     m_uClientPointerEvent = uEvent
     '--- success
@@ -1792,8 +1871,8 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvHandleTightTransfer(uOutput As UcsBuffer, uMsg As UcsTightTransfer, baData() As Byte) As Boolean
-    Const FUNC_NAME     As String = "pvHandleTightTransfer"
+Private Function pvHandleTightFileTransfer(uOutput As UcsBuffer, uMsg As UcsTightTransfer, baData() As Byte) As Boolean
+    Const FUNC_NAME     As String = "pvHandleTightFileTransfer"
     Const STR_TYPES     As String = "CompressionSupportRequest|CompressionSupportReply|FileListRequest|FileListReply|Md5Request|Md5Reply|UploadStartRequest|UploadStartReply|UploadDataRequest|UploadDataReply|UploadEndRequest|UploadEndReply|DownloadStartRequest|DownloadStartReply|DownloadDataRequest|DownloadDataReply|DownloadEndReply|MkdirRequest|MkdirReply|RemoveRequest|RemoveReply|RenameRequest|RenameReply|DirsizeRequest|DirsizeReply|LastRequestFailedReply"
     Const FLAG_FILE     As Long = 0
     Const FLAG_DIR      As Long = 1
@@ -1934,7 +2013,7 @@ Failed:
         pvBufferWriteLong uOutput, rfbMsgTightLastRequestFailedReply, Size:=4
     End Select
     '--- success (or failure)
-    pvHandleTightTransfer = pvBufferSendAsync(uOutput)
+    pvHandleTightFileTransfer = pvBufferSendAsync(uOutput)
 QH:
     If hFind <> INVALID_HANDLE_VALUE And hFind <> 0 Then
         Call FindClose(hFind)
@@ -1962,6 +2041,9 @@ Attribute TimerProc.VB_MemberFlags = "40"
     m_uCaptureFrame.PointerShapeBufferSize = 0
     If Not m_uCaptureCtx.Duplication Is Nothing Then
         If Not pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
+            If m_uCaptureCtx.Duplication Is Nothing Then
+                frCaptureSetupDeviceIndex
+            End If
             GoTo QH
         End If
     End If
@@ -2024,6 +2106,27 @@ Friend Function frNotifyAfterSendFrame() As Boolean
     frNotifyAfterSendFrame = True
 QH:
 End Function
+
+Friend Function frNotifyChangeDesktopSize() As Boolean
+    m_uClientEncodings.NeedDesktopSizes = 1
+End Function
+
+Friend Sub frCaptureSetupDeviceIndex(Optional ByVal Rotate As Long)
+    Dim vDevice         As Variant
+    Dim oConn           As cVncServer
+    
+    With pvCaptureEnumDevices()
+        If .Count > 0 Then
+            m_lDeviceIndex = (m_lDeviceIndex + Rotate) Mod .Count
+            vDevice = .Item(m_lDeviceIndex + 1)
+        End If
+    End With
+    If pvCaptureInit(m_uCaptureCtx, At(vDevice, 0), 1) Then
+        For Each oConn In m_cConnections
+            oConn.frNotifyChangeDesktopSize
+        Next
+    End If
+End Sub
 
 Private Function pvCaptureEnumDevices() As Collection
     Const FUNC_NAME     As String = "pvCaptureEnumDevices"
@@ -2093,8 +2196,10 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
         Set .Duplication = Nothing
         Set .StageTexture = Nothing
         Set .Context = Nothing
-        .Width = Screen.Width / Screen.TwipsPerPixelX
-        .Height = Screen.Height / Screen.TwipsPerPixelY
+        .Left = 0
+        .Top = 0
+        .Width = GetSystemMetrics(SM_CXSCREEN)
+        .Height = GetSystemMetrics(SM_CYSCREEN)
         hResult = CreateDXGIFactory1(IIDFromString(szIID_IDXGIFactory1), pFactory)
         If hResult < 0 Then
             Err.Raise hResult, "CreateDXGIFactory1"
@@ -2130,8 +2235,10 @@ Continue:
             GoTo QH
         End If
         .DeviceName = Replace(uOutputDesc.DeviceName, vbNullChar, vbNullString)
-        .Width = uOutputDesc.DesktopCoordinates.Right - uOutputDesc.DesktopCoordinates.Left
-        .Height = uOutputDesc.DesktopCoordinates.Bottom - uOutputDesc.DesktopCoordinates.Top
+        .Left = uOutputDesc.DesktopCoordinates.Left
+        .Top = uOutputDesc.DesktopCoordinates.Top
+        .Width = uOutputDesc.DesktopCoordinates.Right - .Left
+        .Height = uOutputDesc.DesktopCoordinates.Bottom - .Top
         .Timeout = lTimeout
         hResult = D3D11CreateDevice(pAdapter, D3D_DRIVER_TYPE_UNKNOWN, 0, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, ByVal 0, 0, D3D11_SDK_VERSION, pD3D11Device, 0, .Context)
         If hResult < 0 Then
@@ -2142,32 +2249,33 @@ Continue:
         pDXGIDevice.SetGPUThreadPriority 7
         pDXGIDevice.SetMaximumFrameLatency 1
         hResult = pOutput.DuplicateOutput(pD3D11Device, .Duplication)
-        If hResult >= 0 Then
-            .Duplication.GetDesc uDuplDesc
-            .InSystemMemory = (uDuplDesc.DesktopImageInSystemMemory <> 0)
-            Debug.Assert uDuplDesc.ModeDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM
-            With uTextureDesc
-                .Width = uCtx.Width
-                .Height = uCtx.Height
-                .MipLevels = 1
-                .ArraySize = 1
-                .Format = uDuplDesc.ModeDesc.Format
-                .SampleDesc.Count = 1
-                .SampleDesc.Quality = 0
-                .Usage = D3D11_USAGE_STAGING
-                .BindFlags = 0
-                .CPUAccessFlags = D3D11_CPU_ACCESS_READ
-                .MiscFlags = 0
-            End With
-            Set .StageTexture = pD3D11Device.CreateTexture2D(uTextureDesc, ByVal 0)
-            hResult = .Context.Map(.StageTexture, 0, D3D11_MAP_READ, 0, uResource)
-            If hResult < 0 Then
-                Err.Raise hResult, "ID3D11DeviceContext.Map"
-            End If
-            .Pitch = uResource.RowPitch
-            .Stride = uResource.RowPitch / IIf(uDuplDesc.ModeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT, 8, 4)
-            .Context.Unmap .StageTexture, 0
+        If hResult < 0 Then
+            GoTo QH
         End If
+        .Duplication.GetDesc uDuplDesc
+        .InSystemMemory = (uDuplDesc.DesktopImageInSystemMemory <> 0)
+        Debug.Assert uDuplDesc.ModeDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM
+        With uTextureDesc
+            .Width = uCtx.Width
+            .Height = uCtx.Height
+            .MipLevels = 1
+            .ArraySize = 1
+            .Format = uDuplDesc.ModeDesc.Format
+            .SampleDesc.Count = 1
+            .SampleDesc.Quality = 0
+            .Usage = D3D11_USAGE_STAGING
+            .BindFlags = 0
+            .CPUAccessFlags = D3D11_CPU_ACCESS_READ
+            .MiscFlags = 0
+        End With
+        Set .StageTexture = pD3D11Device.CreateTexture2D(uTextureDesc, ByVal 0)
+        hResult = .Context.Map(.StageTexture, 0, D3D11_MAP_READ, 0, uResource)
+        If hResult < 0 Then
+            Err.Raise hResult, "ID3D11DeviceContext.Map"
+        End If
+        .Pitch = uResource.RowPitch
+        .Stride = uResource.RowPitch / IIf(uDuplDesc.ModeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT, 8, 4)
+        .Context.Unmap .StageTexture, 0
     End With
     '--- success
     pvCaptureInit = True
@@ -2205,6 +2313,7 @@ Private Function pvCaptureFrame(uCtx As UcsCaptureContext, uFrame As UcsCaptureF
             GoTo QH
         End If
         If hResult < 0 Then
+            Set .Duplication = Nothing
             GoTo QH
         End If
         If uFrameInfo.LastPresentTime.LowPart <> 0 Or uFrameInfo.LastPresentTime.HighPart <> 0 Then
@@ -2355,17 +2464,23 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
 #End If
     
     On Error GoTo EH
+    If m_uClientEncodings.NeedDesktopSizes > 0 Then
+        If Not pvSendDesktopSize(uOutput, pvParent.CaptureWidth, pvParent.CaptureHeight) Then
+            GoTo QH
+        End If
+        m_uClientEncodings.NeedDesktopSizes = 0
+    End If
     With uFrame
         lBytesPerPixel = Clamp(m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8, 1, 4)
         If lBytesPerPixel = 1 Or lBytesPerPixel = 2 Then
-            pvCapturePrepareLut aRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
-            pvCapturePrepareLut aGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
-            pvCapturePrepareLut aBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
+            pvCapturePrepareLut aRedLut, m_uClientPixelFormat.PixelFormat.RedMax, m_uClientPixelFormat.PixelFormat.RedShift
+            pvCapturePrepareLut aGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, m_uClientPixelFormat.PixelFormat.GreenShift
+            pvCapturePrepareLut aBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, m_uClientPixelFormat.PixelFormat.BlueShift
         End If
         #If ImplHistograms Then
-            pvCapturePrepareLut aRedHist, 7, 2 ^ 5
-            pvCapturePrepareLut aGreenHist, 7, 2 ^ 2
-            pvCapturePrepareLut aBlueHist, 3, 2 ^ 0
+            pvCapturePrepareLut aRedHist, 7, 5
+            pvCapturePrepareLut aGreenHist, 7, 2
+            pvCapturePrepareLut aBlueHist, 3, 0
         #End If
         pvArrayAllocate baRow, lWidth * 4, FUNC_NAME & ".baRow"
         '--- send pointer
@@ -2549,7 +2664,7 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
                             For lX = 0 To .Tiles(lIdx).Width - 1
                                 lColor1 = aRedLut(baRow(lX * 4 + 2)) Or aGreenLut(baRow(lX * 4 + 1)) Or aBlueLut(baRow(lX * 4 + 0))
                                 If lBytesPerPixel = 1 Then
-                                    baRow(lX) = lColor1
+                                    baRow(lX) = lColor1 And &HFF&
                                 Else
                                     baRow(lX * 2 + 0) = lColor1 And &HFF&
                                     baRow(lX * 2 + 1) = lColor1 \ &H100&
@@ -2612,9 +2727,9 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
                 If lBytesPerPixel <> m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8 Then
                     lBytesPerPixel = Clamp(m_uClientPixelFormat.PixelFormat.BitsPerPixel \ 8, 1, 4)
                     If lBytesPerPixel = 1 Or lBytesPerPixel = 2 Then
-                        pvCapturePrepareLut aRedLut, m_uClientPixelFormat.PixelFormat.RedMax, 2 ^ m_uClientPixelFormat.PixelFormat.RedShift
-                        pvCapturePrepareLut aGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, 2 ^ m_uClientPixelFormat.PixelFormat.GreenShift
-                        pvCapturePrepareLut aBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, 2 ^ m_uClientPixelFormat.PixelFormat.BlueShift
+                        pvCapturePrepareLut aRedLut, m_uClientPixelFormat.PixelFormat.RedMax, m_uClientPixelFormat.PixelFormat.RedShift
+                        pvCapturePrepareLut aGreenLut, m_uClientPixelFormat.PixelFormat.GreenMax, m_uClientPixelFormat.PixelFormat.GreenShift
+                        pvCapturePrepareLut aBlueLut, m_uClientPixelFormat.PixelFormat.BlueMax, m_uClientPixelFormat.PixelFormat.BlueShift
                     End If
                 End If
             End If
@@ -2682,9 +2797,12 @@ Private Sub pvCapturePrepareLut(aLut() As Long, ByVal lMax As Long, ByVal lShift
     
     On Error GoTo EH
     ReDim aLut(0 To 255) As Long
-    For lIdx = 0 To 255
-        aLut(lIdx) = Int(lIdx * lMax / 255 + 0.5) * lShift
-    Next
+    If lShift < 32 Then
+        lShift = 2 ^ lShift
+        For lIdx = 0 To 255
+            aLut(lIdx) = Int(lIdx * lMax / 255 + 0.5) * lShift
+        Next
+    End If
     Exit Sub
 EH:
     PrintError FUNC_NAME
@@ -2809,6 +2927,10 @@ Private Function pvGetEncodingBit(ByVal eEncoding As RfbEncodingEnum) As Long
         pvGetEncodingBit = 2 ^ 4
     Case rfbEncPsCursor
         pvGetEncodingBit = 2 ^ 5
+    Case rfbEncPsDesktopSize
+        pvGetEncodingBit = 2 ^ 6
+    Case rfbEncPsExtendedDesktopSize
+        pvGetEncodingBit = 2 ^ 7
     End Select
 End Function
 
@@ -3336,20 +3458,14 @@ End Property
 Private Sub m_oSocket_OnAccept()
     Const FUNC_NAME     As String = "m_oSocket_OnAccept"
     Dim oSocket         As cAsyncSocket
-    Dim vDevice         As Variant
     Dim oConn           As cVncServer
     
     On Error GoTo EH
     If Not m_oSocket.Accept(oSocket) Then
         GoTo QH
     End If
-    If m_cConnections.Count = 0 Then
-        With pvCaptureEnumDevices()
-            If .Count > 0 Then
-                vDevice = .Item(1)
-            End If
-        End With
-        pvCaptureInit m_uCaptureCtx, At(vDevice, 0), 1
+    If m_cConnections.Count = 0 Or m_uCaptureCtx.Duplication Is Nothing Then
+        frCaptureSetupDeviceIndex
     End If
     Set oConn = New cVncServer
     m_cConnections.Add oConn, "#" & ObjPtr(oConn)
