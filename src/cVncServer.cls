@@ -37,8 +37,6 @@ Private Const MODULE_NAME As String = "cVncServer"
 
 '--- for OpenInputDesktop
 Private Const GENERIC_READ                                  As Long = &H80000000
-'--- for SetProcessDpiAwarenessContext
-Private Const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2    As Long = -4
 '--- for D3DKMTSetProcessSchedulingPriorityClass
 Private Const D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME       As Long = 5
 '--- for mouse_event
@@ -100,6 +98,9 @@ Private Const KEYEVENTF_EXTENDEDKEY         As Long = 1
 Private Const KEYEVENTF_KEYUP               As Long = 2
 Private Const KEYEVENTF_UNICODE             As Long = 4
 Private Const INPUT_KEYBOARD                As Long = 1
+'--- for GetDeviceCaps
+Private Const DESKTOPVERTRES                As Long = 117
+Private Const DESKTOPHORZRES                As Long = 118
 '--- for thunks
 Private Const MEM_COMMIT                    As Long = &H1000
 Private Const PAGE_EXECUTE_READWRITE        As Long = &H40
@@ -132,8 +133,10 @@ Private Declare Function RedrawWindow Lib "user32" (ByVal hWnd As Long, lprcUpda
 Private Declare Function OpenInputDesktop Lib "user32" (ByVal dwFlags As Long, ByVal fInherit As Boolean, ByVal dwDesiredAccess As Long) As Long
 Private Declare Function CloseDesktop Lib "user32" (ByVal hDesktop As Long) As Long
 Private Declare Function SetThreadDesktop Lib "user32" (ByVal hDesktop As Long) As Long
-Private Declare Function SetProcessDpiAwarenessContext Lib "user32" (ByVal lValue As Long) As Long
 Private Declare Function D3DKMTSetProcessSchedulingPriorityClass Lib "gdi32" (ByVal hProcess As Long, ByVal lPriority As Long) As Long
+Private Declare Function CreateDC Lib "gdi32" Alias "CreateDCA" (ByVal lpDriverName As Long, ByVal lpDeviceName As String, ByVal lpOutput As Long, ByVal lpInitData As Long) As Long
+Private Declare Function GetDeviceCaps Lib "gdi32" (ByVal hDC As Long, ByVal nIndex As Long) As Long
+Private Declare Function DeleteDC Lib "gdi32" (ByVal hDC As Long) As Long
 '--- ole/oleaut/shell
 Private Declare Sub CoTaskMemFree Lib "ole32" (ByVal pv As Long)
 Private Declare Function DispCallFunc Lib "oleaut32" (ByVal pvInstance As Long, ByVal oVft As Long, ByVal lCc As Long, ByVal vtReturn As VbVarType, ByVal cActuals As Long, prgVt As Any, prgpVarg As Any, pvargResult As Variant) As Long
@@ -2167,6 +2170,7 @@ End Function
 Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As String, ByVal lTimeout As Long) As Boolean
     Const FUNC_NAME     As String = "pvCaptureInit"
     Dim hDesktop        As Long
+    Dim hDC             As Long
     Dim pFactory        As IDXGIFactory1
     Dim lIdx            As Long
     Dim lJdx            As Long
@@ -2187,9 +2191,6 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
         Call SetThreadDesktop(hDesktop)
         Call CloseDesktop(hDesktop)
     End If
-    On Error Resume Next '--- Windows 10, version 1703 and above
-    Call SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
-    On Error GoTo EH
     With uCtx
         .DeviceName = vbNullString
         Set .DesktopResource = Nothing
@@ -2198,8 +2199,15 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
         Set .Context = Nothing
         .Left = 0
         .Top = 0
-        .Width = GetSystemMetrics(SM_CXSCREEN)
-        .Height = GetSystemMetrics(SM_CYSCREEN)
+        hDC = CreateDC(0, sDeviceName, 0, 0)
+        If hDC <> 0 Then
+            .Width = GetDeviceCaps(hDC, DESKTOPHORZRES)
+            .Height = GetDeviceCaps(hDC, DESKTOPVERTRES)
+            Call DeleteDC(hDC)
+        Else
+            .Width = GetSystemMetrics(SM_CXSCREEN)
+            .Height = GetSystemMetrics(SM_CYSCREEN)
+        End If
         hResult = CreateDXGIFactory1(IIDFromString(szIID_IDXGIFactory1), pFactory)
         If hResult < 0 Then
             Err.Raise hResult, "CreateDXGIFactory1"
@@ -2235,10 +2243,9 @@ Continue:
             GoTo QH
         End If
         .DeviceName = Replace(uOutputDesc.DeviceName, vbNullChar, vbNullString)
-        .Left = uOutputDesc.DesktopCoordinates.Left
-        .Top = uOutputDesc.DesktopCoordinates.Top
-        .Width = uOutputDesc.DesktopCoordinates.Right - .Left
-        .Height = uOutputDesc.DesktopCoordinates.Bottom - .Top
+        '--- convert logical to physical coordinates (undo DPI scaling)
+        .Left = uOutputDesc.DesktopCoordinates.Left * .Width \ (uOutputDesc.DesktopCoordinates.Right - uOutputDesc.DesktopCoordinates.Left)
+        .Top = uOutputDesc.DesktopCoordinates.Top * .Height \ (uOutputDesc.DesktopCoordinates.Bottom - uOutputDesc.DesktopCoordinates.Top)
         .Timeout = lTimeout
         hResult = D3D11CreateDevice(pAdapter, D3D_DRIVER_TYPE_UNKNOWN, 0, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, ByVal 0, 0, D3D11_SDK_VERSION, pD3D11Device, 0, .Context)
         If hResult < 0 Then
@@ -2906,7 +2913,7 @@ Private Function pvCheckHResult(ByVal hResult As Long, Optional vErrSource As Va
         Err.Raise hResult, vErrSource
     End If
 QH:
-    pvCheckHResult = pvCheckHResult
+    pvCheckHResult = hResult
     Exit Function
 EH:
     PrintError IIf(IsMissing(vErrSource), FUNC_NAME, vErrSource)
@@ -3347,16 +3354,25 @@ End Function
 
 Private Function pvCalcAdler32(ByVal lAdler As Long, baData() As Byte, ByVal lPos As Long, ByVal lSize As Long) As Long
     Const LNG_BASE      As Long = 65521
+    Const LNG_CHUNK_LEN As Long = 3854
     Dim lA              As Long
     Dim lB              As Long
     Dim lIdx            As Long
-
+    Dim lChunkSize      As Long
+    
     lA = lAdler And &HFFFF&
     Call CopyMemory(lB, ByVal VarPtr(lAdler) + 2, 2)
-    For lIdx = lPos To lPos + lSize - 1
-        lA = (lA + baData(lIdx)) Mod LNG_BASE
-        lB = (lB + lA) Mod LNG_BASE
-    Next
+    lIdx = lPos
+    Do While lSize > 0
+        lChunkSize = IIf(lSize > LNG_CHUNK_LEN, LNG_CHUNK_LEN, lSize)
+        For lIdx = lIdx To lIdx + lChunkSize - 1
+            lA = lA + baData(lIdx)
+            lB = lB + lA
+        Next
+        lA = lA Mod LNG_BASE
+        lB = lB Mod LNG_BASE
+        lSize = lSize - lChunkSize
+    Loop
     pvCalcAdler32 = lA
     Call CopyMemory(ByVal VarPtr(pvCalcAdler32) + 2, lB, 2)
 End Function
