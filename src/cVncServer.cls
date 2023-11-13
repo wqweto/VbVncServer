@@ -13,7 +13,7 @@ Attribute VB_PredeclaredId = False
 Attribute VB_Exposed = False
 '=========================================================================
 '
-' VbVncServer Project (c) 2021 by wqweto@gmail.com
+' VbVncServer Project (c) 2021-2023 by wqweto@gmail.com
 '
 ' Simple VNC Server using DXGI Desktop Duplication
 '
@@ -109,8 +109,8 @@ Private Const SIGN_BIT                      As Long = &H80000000
 Private Declare Sub CopyMemory Lib "kernel32" Alias "RtlMoveMemory" (Destination As Any, Source As Any, ByVal Length As Long)
 Private Declare Function IsBadReadPtr Lib "kernel32" (ByVal lp As Long, ByVal ucb As Long) As Long
 Private Declare Function GetCurrentProcess Lib "kernel32" () As Long
-Private Declare Function GetLogicalDriveStrings Lib "kernel32" Alias "GetLogicalDriveStringsA" (ByVal nBufferLength As Long, lpBuffer As Any) As Long
-Private Declare Function GetDriveType Lib "kernel32" Alias "GetDriveTypeA" (nDrive As Any) As Long
+Private Declare Function GetLogicalDriveStringsA Lib "kernel32" (ByVal nBufferLength As Long, lpBuffer As Any) As Long
+Private Declare Function GetDriveTypeA Lib "kernel32" (nDrive As Any) As Long
 Private Declare Function FindFirstFile Lib "kernel32" Alias "FindFirstFileW" (ByVal lpFileName As Long, ByVal lpFindFileData As Long) As Long
 Private Declare Function FindNextFile Lib "kernel32" Alias "FindNextFileW" (ByVal hFindFile As Long, ByVal lpFindFileData As Long) As Long
 Private Declare Function FindClose Lib "kernel32" (ByVal hFindFile As Long) As Long
@@ -127,7 +127,7 @@ Private Declare Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As L
 '--- user32/gdi32
 Private Declare Sub mouse_event Lib "user32" (ByVal dwFlags As Long, ByVal dx As Long, ByVal dy As Long, ByVal cButtons As Long, ByVal dwExtraInfo As Long)
 Private Declare Function SendInput Lib "user32" (ByVal nInputs As Long, pInputs As Any, ByVal cbSize As Long) As Long
-Private Declare Function MapVirtualKey Lib "user32" Alias "MapVirtualKeyA" (ByVal uCode As Long, ByVal uMapType As Long) As Long
+Private Declare Function MapVirtualKeyA Lib "user32" (ByVal uCode As Long, ByVal uMapType As Long) As Long
 Private Declare Function GetSystemMetrics Lib "user32" (ByVal nIndex As Long) As Long
 Private Declare Function RedrawWindow Lib "user32" (ByVal hWnd As Long, lprcUpdate As Any, ByVal hrgnUpdate As Long, ByVal fuRedraw As Long) As Long
 Private Declare Function OpenInputDesktop Lib "user32" (ByVal dwFlags As Long, ByVal fInherit As Boolean, ByVal dwDesiredAccess As Long) As Long
@@ -174,8 +174,8 @@ Private Declare Function IPropertyBag2_Write_Proxy Lib "windowscodecs" (ByVal pP
 #If Not ImplUseShared Then
     '--- for thunks
     Private Declare Function VirtualAlloc Lib "kernel32" (ByVal lpAddress As Long, ByVal dwSize As Long, ByVal flAllocationType As Long, ByVal flProtect As Long) As Long
-    Private Declare Function CallWindowProc Lib "user32" Alias "CallWindowProcA" (ByVal lpPrevWndFunc As Long, ByVal hWnd As Long, ByVal Msg As Long, ByVal wParam As Long, ByVal lParam As Long) As Long
-    Private Declare Function GetModuleHandle Lib "kernel32" Alias "GetModuleHandleA" (ByVal lpModuleName As String) As Long
+    Private Declare Function CallWindowProc Lib "user32" Alias "CallWindowProcW" (ByVal lpPrevWndFunc As Long, ByVal hWnd As Long, ByVal Msg As Long, ByVal wParam As Long, ByVal lParam As Long) As Long
+    Private Declare Function GetModuleHandle Lib "kernel32" Alias "GetModuleHandleW" (ByVal lpModuleName As Long) As Long
     Private Declare Function GetProcAddress Lib "kernel32" (ByVal hModule As Long, ByVal lpProcName As String) As Long
     Private Declare Function GetCurrentProcessId Lib "kernel32" () As Long
     #If Not ImplNoIdeProtection Then
@@ -186,12 +186,12 @@ Private Declare Function IPropertyBag2_Write_Proxy Lib "windowscodecs" (ByVal pP
     Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnvironmentVariableA" (ByVal lpName As String, ByVal lpValue As String) As Long
 #End If
 Private Declare Function D3D11CreateDevice Lib "d3d11" (ByVal pAdapter As IUnknown, ByVal DriverType As D3D_DRIVER_TYPE, ByVal Software As Long, ByVal Flags As D3D11_CREATE_DEVICE_FLAG, pFeatureLevels As Any, ByVal FeatureLevels As Long, ByVal SDKVersion As Long, ppDevice As ID3D11Device, pFeatureLevel As D3D_FEATURE_LEVEL, ppImmediateContext As ID3D11DeviceContext) As VBHRESULT
-Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBGUID, ppFactory As IDXGIFactory1) As VBHRESULT
+Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBD3D11.VBGUID, ppFactory As IDXGIFactory1) As VBHRESULT
 
 Private Type BLOBHEADER
     bType               As Byte
     bVersion            As Byte
-    reserved            As Integer
+    nReserved           As Integer
     aiKeyAlg            As Long
     cbKeySize           As Long
     Buffer(0 To 7)      As Byte
@@ -564,7 +564,7 @@ Private m_pTimer                As IUnknown
 Private m_pWicFactory           As stdole.IUnknown
 Private m_aWicFormatJpeg()      As Long
 Private m_aWicFormatPng()       As Long
-Private m_aWicFormat32bppPBGRA() As Long
+Private m_aWicFormat32bppBGR()  As Long
 Private m_pImageStream          As stdole.IUnknown
 Private m_bFtpSendRunning       As Boolean
 Private m_pFtpSendStream        As stdole.IUnknown
@@ -756,11 +756,11 @@ Friend Function frNewConnection(oSocket As cAsyncSocket, oParent As cVncServer) 
     m_aWicFormatPng(1) = &H473C713F
     m_aWicFormatPng(2) = &H3761CDBB
     m_aWicFormatPng(3) = &HAFAE5F42
-    ReDim m_aWicFormat32bppPBGRA(0 To 3) As Long
-    m_aWicFormat32bppPBGRA(0) = &H6FDDC324
-    m_aWicFormat32bppPBGRA(1) = &H4BFE4E03
-    m_aWicFormat32bppPBGRA(2) = &H773D85B1
-    m_aWicFormat32bppPBGRA(3) = &H10C98D76
+    ReDim m_aWicFormat32bppBGR(0 To 3) As Long
+    m_aWicFormat32bppBGR(0) = &H6FDDC324
+    m_aWicFormat32bppBGR(1) = &H4BFE4E03
+    m_aWicFormat32bppBGR(2) = &H773D85B1
+    m_aWicFormat32bppBGR(3) = &HEC98D76
     Set m_pImageStream = SHCreateMemStream(ByVal 0, 0)
     '--- success
     frNewConnection = True
@@ -1438,7 +1438,7 @@ Private Function pvHandleKeyEvent(uEvent As RfbClientKeyEvent) As Boolean
         uInput.dwFlags = KEYEVENTF_KEYUP
     End If
     If pvMapToVirtualKey(uEvent.Key, uInput.wVk, bExtended) Then
-        uInput.wScan = MapVirtualKey(uInput.wVk, 0)
+        uInput.wScan = MapVirtualKeyA(uInput.wVk, 0)
         If bExtended Then
             uInput.dwFlags = uInput.dwFlags Or KEYEVENTF_EXTENDEDKEY
         End If
@@ -1678,9 +1678,9 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
         Select Case uMsg.ContentParam
         Case rfbFtpRDrivesList
             ReDim baBuffer(0 To 256) As Byte
-            lSize = GetLogicalDriveStrings(UBound(baBuffer), baBuffer(0))
+            lSize = GetLogicalDriveStringsA(UBound(baBuffer), baBuffer(0))
             For lIdx = 0 To lSize - 3 Step 4
-                Select Case GetDriveType(baBuffer(lIdx))
+                Select Case GetDriveTypeA(baBuffer(lIdx))
                 Case DRIVE_REMOVABLE
                     baBuffer(lIdx + 2) = 102    ' Asc("f")
                 Case DRIVE_FIXED
@@ -1907,7 +1907,7 @@ Private Function pvHandleTightFileTransfer(uOutput As UcsBuffer, uMsg As UcsTigh
         sFolder = Mid$(uMsg.Path, 2)
         If LenB(sFolder) = 0 Then
             ReDim baBuffer(0 To 256) As Byte
-            lSize = GetLogicalDriveStrings(UBound(baBuffer), baBuffer(0))
+            lSize = GetLogicalDriveStringsA(UBound(baBuffer), baBuffer(0))
             pvBufferWriteLong uList, lSize \ 4, Size:=4
             For lIdx = 0 To lSize - 3 Step 4
                 sFile = Space$(2)
@@ -2133,6 +2133,7 @@ End Sub
 
 Private Function pvCaptureEnumDevices() As Collection
     Const FUNC_NAME     As String = "pvCaptureEnumDevices"
+    Dim IID_IDXGIFactory1 As VBD3D11.VBGUID
     Dim hResult         As VBHRESULT
     Dim pFactory        As IDXGIFactory1
     Dim lIdx            As Long
@@ -2144,7 +2145,8 @@ Private Function pvCaptureEnumDevices() As Collection
     
     On Error GoTo EH
     Set pvCaptureEnumDevices = New Collection
-    hResult = CreateDXGIFactory1(IIDFromString(szIID_IDXGIFactory1), pFactory)
+    LSet IID_IDXGIFactory1 = IIDFromString(szIID_IDXGIFactory1)
+    hResult = CreateDXGIFactory1(IID_IDXGIFactory1, pFactory)
     If hResult < 0 Then
         Err.Raise hResult, "CreateDXGIFactory1"
     End If
@@ -2169,6 +2171,7 @@ End Function
 
 Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As String, ByVal lTimeout As Long) As Boolean
     Const FUNC_NAME     As String = "pvCaptureInit"
+    Dim IID_IDXGIFactory1 As VBD3D11.VBGUID
     Dim hDesktop        As Long
     Dim hDC             As Long
     Dim pFactory        As IDXGIFactory1
@@ -2208,7 +2211,8 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
             .Width = GetSystemMetrics(SM_CXSCREEN)
             .Height = GetSystemMetrics(SM_CYSCREEN)
         End If
-        hResult = CreateDXGIFactory1(IIDFromString(szIID_IDXGIFactory1), pFactory)
+        LSet IID_IDXGIFactory1 = IIDFromString(szIID_IDXGIFactory1)
+        hResult = CreateDXGIFactory1(IID_IDXGIFactory1, pFactory)
         If hResult < 0 Then
             Err.Raise hResult, "CreateDXGIFactory1"
         End If
@@ -2640,7 +2644,7 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
                     GoTo QH
                 End If
                 If Not pvWicConvertImage(m_pImageStream, m_aWicFormatJpeg, Clamp(lQualityLevel, 1, 100), _
-                        uTile.Data, .Tiles(lIdx).Width, .Tiles(lIdx).Height, m_aWicFormat32bppPBGRA) Then
+                        uTile.Data, .Tiles(lIdx).Width, .Tiles(lIdx).Height, m_aWicFormat32bppBGR) Then
                     GoTo QH
                 End If
                 If pvCheckHResult(IStream_Seek(m_pImageStream, 0, STREAM_SEEK_CUR, cTemp)) < 0 Then
@@ -3568,7 +3572,7 @@ Public Function InitAddressOfMethod(pObj As Object, ByVal MethodParamCount As Lo
     If hThunk = 0 Then
         Exit Function
     End If
-    lSize = CallWindowProc(hThunk, ObjPtr(pObj), MethodParamCount, GetProcAddress(GetModuleHandle("kernel32"), "VirtualFree"), VarPtr(InitAddressOfMethod))
+    lSize = CallWindowProc(hThunk, ObjPtr(pObj), MethodParamCount, GetProcAddress(GetModuleHandle(StrPtr("kernel32")), "VirtualFree"), VarPtr(InitAddressOfMethod))
     Debug.Assert lSize = THUNK_SIZE
 End Function
 
@@ -3591,16 +3595,16 @@ Public Function InitFireOnceTimerThunk(pObj As Object, ByVal pfnCallback As Long
         If hThunk = 0 Then
             Exit Function
         End If
-        aParams(2) = GetProcAddress(GetModuleHandle("ole32"), "CoTaskMemAlloc")
-        aParams(3) = GetProcAddress(GetModuleHandle("ole32"), "CoTaskMemFree")
-        aParams(4) = GetProcAddress(GetModuleHandle("user32"), "SetTimer")
-        aParams(5) = GetProcAddress(GetModuleHandle("user32"), "KillTimer")
+        aParams(2) = GetProcAddress(GetModuleHandle(StrPtr("ole32")), "CoTaskMemAlloc")
+        aParams(3) = GetProcAddress(GetModuleHandle(StrPtr("ole32")), "CoTaskMemFree")
+        aParams(4) = GetProcAddress(GetModuleHandle(StrPtr("user32")), "SetTimer")
+        aParams(5) = GetProcAddress(GetModuleHandle(StrPtr("user32")), "KillTimer")
         '--- for IDE protection
         Debug.Assert pvThunkIdeOwner(aParams(6))
         If aParams(6) <> 0 Then
-            aParams(7) = GetProcAddress(GetModuleHandle("user32"), "GetWindowLongA")
-            aParams(8) = GetProcAddress(GetModuleHandle("vba6"), "EbMode")
-            aParams(9) = GetProcAddress(GetModuleHandle("vba6"), "EbIsResetting")
+            aParams(7) = GetProcAddress(GetModuleHandle(StrPtr("user32")), "GetWindowLongA")
+            aParams(8) = GetProcAddress(GetModuleHandle(StrPtr("vba6")), "EbMode")
+            aParams(9) = GetProcAddress(GetModuleHandle(StrPtr("vba6")), "EbIsResetting")
         End If
         #If ImplSelfContained Then
             pvThunkGlobalData("InitFireOnceTimerThunk") = hThunk
@@ -3615,7 +3619,7 @@ Private Function pvThunkIdeOwner(hIdeOwner As Long) As Boolean
         Dim lProcessId      As Long
         
         Do
-            hIdeOwner = FindWindowEx(0, hIdeOwner, "IDEOwner", vbNullString)
+            hIdeOwner = FindWindowEx(0, hIdeOwner, StrPtr("IDEOwner"), 0)
             Call GetWindowThreadProcessId(hIdeOwner, lProcessId)
         Loop While hIdeOwner <> 0 And lProcessId <> GetCurrentProcessId()
     #End If
@@ -3658,12 +3662,12 @@ Private Property Get pvThunkGlobalData(sKey As String) As Long
     Dim sBuffer     As String
     
     sBuffer = String$(50, 0)
-    Call GetEnvironmentVariable("_MST_GLOBAL" & GetCurrentProcessId() & "_" & sKey, sBuffer, Len(sBuffer) - 1)
+    Call GetEnvironmentVariable(StrPtr("_MST_GLOBAL" & GetCurrentProcessId() & "_" & sKey), StrPtr(sBuffer), Len(sBuffer) - 1)
     pvThunkGlobalData = Val(Left$(sBuffer, InStr(sBuffer, vbNullChar) - 1))
 End Property
 
 Private Property Let pvThunkGlobalData(sKey As String, ByVal lValue As Long)
-    Call SetEnvironmentVariable("_MST_GLOBAL" & GetCurrentProcessId() & "_" & sKey, lValue)
+    Call SetEnvironmentVariable(StrPtr("_MST_GLOBAL" & GetCurrentProcessId() & "_" & sKey), StrPtr(lValue))
 End Property
 #End If
 
