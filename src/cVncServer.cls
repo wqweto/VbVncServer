@@ -539,6 +539,7 @@ Private Const LNG_CHALLENGE_SIZE    As Long = 16
 Private m_cConnections          As Collection
 Private m_sPassword             As String
 Private m_lDeviceIndex          As Long
+Private m_sAppName              As String
 '--- client
 Private m_lParentWeakRef        As Long
 Private m_eState                As UcsProtocolStateEnum
@@ -611,7 +612,7 @@ Private Type UcsCaptureFrame
     DirtyBuffers()      As UcsBuffer
     PointerSize         As Long
     PointerShape()      As Byte
-    PointerVisible      As Boolean
+    PointerPosition     As DXGI_OUTDUPL_POINTER_POSITION
     PointerInfo         As DXGI_OUTDUPL_POINTER_SHAPE_INFO
     PointerShapeBufferSize As Long
     NumTiles            As Long
@@ -675,6 +676,14 @@ End Property
 
 Public Property Get CaptureHeight() As Long
     CaptureHeight = m_uCaptureCtx.Height
+End Property
+
+Public Property Get AppName() As String
+    AppName = m_sAppName
+End Property
+
+Public Property Let AppName(sValue As String)
+    m_sAppName = sValue
 End Property
 
 Private Property Get pvAddressOfTimerProc() As cVncServer
@@ -948,6 +957,25 @@ Private Function pvSendDesktopSize(uOutput As UcsBuffer, ByVal lWidth As Long, B
     pvSendDesktopSize = pvBufferSendAsync(uOutput)
 End Function
 
+Private Function pvSendPointerPosition(uOutput As UcsBuffer, ByVal lLeft As Long, ByVal lTop As Long) As Boolean
+    Dim uUpdate         As RfbServerFramebufferUpdate
+    Dim uRectangle      As RfbServerRectangle
+    
+    With uUpdate
+        .MessageType = rfbMsgFramebufferUpdate
+        .NumberOfRectangles = pvNetworkShort(1)
+    End With
+    With uRectangle
+        .XPosition = pvNetworkShort(lLeft)
+        .YPosition = pvNetworkShort(lTop)
+        .EncodingType = pvNetworkLong(rfbEncPsPointerPosition)
+    End With
+    pvBufferWriteBlob uOutput, VarPtr(uUpdate), sizeof_RfbServerFramebufferUpdate
+    pvBufferWriteBlob uOutput, VarPtr(uRectangle), sizeof_RfbServerRectangle
+    '--- success (or failure)
+    pvSendPointerPosition = pvBufferSendAsync(uOutput)
+End Function
+
 Private Sub pvHandleReceive(uOutput As UcsBuffer)
     Const FUNC_NAME     As String = "pvHandleReceive"
     Const SecurityResultOk As Long = 0
@@ -1068,7 +1096,7 @@ DoAuth:
                         pvParent.frExclusiveConnection Me
                     End If
                     .Pos = .Pos + 1
-                    If Not pvSendServerInit(uOutput, pvParent.CaptureWidth, pvParent.CaptureHeight, STR_APP_NAME) Then
+                    If Not pvSendServerInit(uOutput, pvParent.CaptureWidth, pvParent.CaptureHeight, Zn(pvParent.AppName, STR_APP_NAME)) Then
                         GoTo QH
                     End If
                     m_eState = uscStaExpectClientMessage
@@ -2083,12 +2111,12 @@ Friend Function frNotifySendFrame(uCaptureFrame As UcsCaptureFrame) As Boolean
         If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
             GoTo QH
         End If
-    ElseIf uCaptureFrame.NumTiles + uCaptureFrame.NumMoveRects + uCaptureFrame.PointerShapeBufferSize = 0 Then
+    ElseIf uCaptureFrame.NumTiles + uCaptureFrame.NumMoveRects + uCaptureFrame.PointerShapeBufferSize = 0 And uCaptureFrame.PointerPosition.Position.X = -1 Then
         If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
             GoTo QH
         End If
     Else
-        If Not pvCaptureSend(pvParent.CaptureWidth, uCaptureFrame, m_uSendBuffer(ucsChaFrame)) Then
+        If Not pvCaptureSend(uCaptureFrame, m_uSendBuffer(ucsChaFrame)) Then
             GoTo QH
         End If
     End If
@@ -2385,7 +2413,7 @@ Private Function pvCaptureFrame(uCtx As UcsCaptureContext, uFrame As UcsCaptureF
             End With
         End If
         If uFrameInfo.LastMouseUpdateTime.LowPart <> 0 Or uFrameInfo.LastMouseUpdateTime.HighPart <> 0 Then
-            uFrame.PointerVisible = (uFrameInfo.PointerPosition.Visible <> 0)
+            uFrame.PointerPosition = uFrameInfo.PointerPosition
         End If
         If .InSystemMemory Then
             .Duplication.MapDesktopSurface uMapRect
@@ -2437,7 +2465,7 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, uOutput As UcsBuffer) As Boolean
+Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) As Boolean
     Const FUNC_NAME     As String = "pvCaptureSend"
     Const LEVEL_CUTOFF  As Long = 85
     Dim lIdx            As Long
@@ -2493,8 +2521,20 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
             pvCapturePrepareLut aGreenHist, 7, 2
             pvCapturePrepareLut aBlueHist, 3, 0
         #End If
-        pvArrayAllocate baRow, lWidth * 4, FUNC_NAME & ".baRow"
+        pvArrayAllocate baRow, (LNG_TILE_SIZE + 1) * 4, FUNC_NAME & ".baRow"
         '--- send pointer
+        If .PointerPosition.Position.X >= 0 And pvHasSupport(rfbEncPsPointerPosition) Then
+            If .PointerPosition.Visible Then
+                lX = .PointerPosition.Position.X + .PointerInfo.HotSpot.X
+                lY = .PointerPosition.Position.Y + .PointerInfo.HotSpot.Y
+                .PointerPosition.Position.X = -1
+            Else
+                lX = -1
+            End If
+            If Not pvSendPointerPosition(uOutput, lX, lY) Then
+                GoTo QH
+            End If
+        End If
         If .PointerShapeBufferSize > 0 And pvHasSupport(rfbEncPsCursor) Then
             Select Case .PointerInfo.Type
             Case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME
@@ -2528,6 +2568,7 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
                     Case 1, 2, 4
                         For lY = 0 To .PointerInfo.Height - 1
                             Debug.Assert IsBadReadPtr(VarPtr(.PointerShape(lY * .PointerInfo.Pitch)), .PointerInfo.Width * 4) = 0
+                            Debug.Assert .PointerInfo.Width * 4 <= UBound(baRow) + 1
                             Call CopyMemory(baRow(0), .PointerShape(lY * .PointerInfo.Pitch), .PointerInfo.Width * 4)
                             For lX = 0 To .PointerInfo.Width - 1
                                 If (baRow(lX * 4 + 3)) > &H80 Then
@@ -2671,6 +2712,7 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
                     For lY = .Tiles(lIdx).Top To .Tiles(lIdx).Top + .Tiles(lIdx).Height - 1
                         If lBytesPerPixel = 1 Or lBytesPerPixel = 2 Then
                             Debug.Assert IsBadReadPtr(lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4) = 0
+                            Debug.Assert .Tiles(lIdx).Width * 4 <= UBound(baRow) + 1
                             Call CopyMemory(baRow(0), ByVal lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4)
                             For lX = 0 To .Tiles(lIdx).Width - 1
                                 lColor1 = aRedLut(baRow(lX * 4 + 2)) Or aGreenLut(baRow(lX * 4 + 1)) Or aBlueLut(baRow(lX * 4 + 0))
@@ -2684,6 +2726,7 @@ Private Function pvCaptureSend(ByVal lWidth As Long, uFrame As UcsCaptureFrame, 
                             pvBufferWriteBlob uTile, pvArrayPtr(baRow), .Tiles(lIdx).Width
                         ElseIf lBytesPerPixel = 3 Then
                             Debug.Assert IsBadReadPtr(lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4) = 0
+                            Debug.Assert .Tiles(lIdx).Width * 4 <= UBound(baRow) - 3
                             Call CopyMemory(baRow(4), ByVal lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4)
                             For lX = 0 To .Tiles(lIdx).Width - 1
                                 baRow(lX * 3 + 0) = baRow(4 + lX * 4 + 2)
@@ -2942,6 +2985,8 @@ Private Function pvGetEncodingBit(ByVal eEncoding As RfbEncodingEnum) As Long
         pvGetEncodingBit = 2 ^ 6
     Case rfbEncPsExtendedDesktopSize
         pvGetEncodingBit = 2 ^ 7
+    Case rfbEncPsPointerPosition
+        pvGetEncodingBit = 2 ^ 8
     End Select
 End Function
 
@@ -3469,6 +3514,10 @@ Public Property Get At(vData As Variant, ByVal lIdx As Long, Optional sDefault A
     End If
 QH:
 End Property
+
+Private Function Zn(sText As String, Optional IfEmptyString As Variant = Null, Optional EmptyString As String) As Variant
+    Zn = IIf(sText = EmptyString, IfEmptyString, sText)
+End Function
 #End If
 
 '=========================================================================
