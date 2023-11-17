@@ -31,6 +31,8 @@ Private Const MODULE_NAME As String = "cVncServer"
 #Const ImplUseDebugLog = (USE_DEBUG_LOG <> 0)
 #Const ImplUseShared = (VNC_USESHARED <> 0)
 
+Public Event OnTextChatMsg(ByVal ConnID As Long, ByVal MsgType As Long, ByVal MsgText As String)
+
 '=========================================================================
 ' API
 '=========================================================================
@@ -250,6 +252,7 @@ Private Enum RfbMessageEnum
     rfbMsgServerCutText = 3
     '--- bidirectional
     rfbMsgFileTransfer = 7
+    rfbMsgTextChat = 11
     rfbMsgSetDesktopSize = 251
     rfbMsgTightFileTransfer = 252 ' &HFC
     '--- tight file transfer
@@ -502,6 +505,15 @@ Private Type RfbTightCapability
 End Type
 Private Const sizeof_RfbTightCapability As Long = 16
 
+Private Type RfbTextChatMsg
+    MessageType         As Byte
+    Pad1                As Byte
+    Pad2                As Integer
+    Length              As Long
+    Text                As String
+End Type
+Private Const sizeof_RfbTextChatMsg As Long = 8
+
 '=========================================================================
 ' Constants and member variables
 '=========================================================================
@@ -519,7 +531,9 @@ End Enum
 Private Enum UcsSendChannelEnum
     ucsChaFrame
     ucsChaFtp
-    [_ucsChaMax]
+    ucsChaChat
+    [_]
+    ucsChaMax = [_] - 1
 End Enum
 
 Private Const STR_APP_NAME          As String = "VbVncServer"
@@ -546,7 +560,7 @@ Private m_eState                As UcsProtocolStateEnum
 Private WithEvents m_oSocket    As cAsyncSocket
 Attribute m_oSocket.VB_VarHelpID = -1
 Private m_uRecvBuffer           As UcsBuffer
-Private m_uSendBuffer(0 To [_ucsChaMax] - 1) As UcsBuffer
+Private m_uSendBuffer(0 To ucsChaMax) As UcsBuffer
 Private m_eSecurityType         As RfbSecurityTypeEnum
 Private m_baSecurityChallenge() As Byte
 Private m_uClientPixelFormat    As RfbClientSetPixelFormat
@@ -698,7 +712,7 @@ Private Property Get pvFirstPendingChannel() As UcsSendChannelEnum
     Dim eChannel        As UcsSendChannelEnum
     
     pvFirstPendingChannel = -1
-    For eChannel = 0 To [_ucsChaMax] - 1
+    For eChannel = 0 To ucsChaMax
         If m_uSendBuffer(eChannel).Size > m_uSendBuffer(eChannel).Pos Then
             pvFirstPendingChannel = eChannel
             Exit For
@@ -734,6 +748,27 @@ Public Function Init(Optional ListenAddress As String, Optional ByVal ListenPort
     End If
     '--- success
     Init = True
+QH:
+End Function
+
+Public Function TextChatMsg(ByVal ConnID As Long, MsgText As String) As Boolean
+    Dim oConn           As cVncServer
+    
+    If m_cConnections Is Nothing Then
+        If Not pvSendTextChatMsg(m_uSendBuffer(ucsChaChat), MsgText) Then
+            GoTo QH
+        End If
+    Else
+        For Each oConn In m_cConnections
+            If ObjPtr(oConn) = ConnID Then
+                If Not oConn.TextChatMsg(0, MsgText) Then
+                    GoTo QH
+                End If
+            End If
+        Next
+    End If
+    '--- success
+    TextChatMsg = True
 QH:
 End Function
 
@@ -976,6 +1011,14 @@ Private Function pvSendPointerPosition(uOutput As UcsBuffer, ByVal lLeft As Long
     pvSendPointerPosition = pvBufferSendAsync(uOutput)
 End Function
 
+Private Function pvSendTextChatMsg(uOutput As UcsBuffer, MsgText As String) As Boolean
+    pvBufferWriteLong uOutput, rfbMsgTextChat
+    pvBufferWriteLong uOutput, 0, Size:=3
+    pvBufferWriteUtf8 uOutput, MsgText
+    '--- success (or failure)
+    pvSendTextChatMsg = pvBufferSendAsync(uOutput)
+End Function
+
 Private Sub pvHandleReceive(uOutput As UcsBuffer)
     Const FUNC_NAME     As String = "pvHandleReceive"
     Const SecurityResultOk As Long = 0
@@ -1129,6 +1172,7 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
     Dim baData()        As Byte
     Dim uTightTransfer  As UcsTightTransfer
     Dim lSize           As Long
+    Dim uTextChatMsg    As RfbTextChatMsg
     
     On Error GoTo EH
     With uInput
@@ -1244,11 +1288,32 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 If .Size - .Pos < sizeof_RfbClientCutText + m_uClientCutText.Length Then
                     GoTo QH
                 End If
-                pvArrayAllocate m_uClientCutText.Text, m_uClientCutText.Length, FUNC_NAME
+                pvArrayAllocate m_uClientCutText.Text, m_uClientCutText.Length, FUNC_NAME & ".m_uClientCutText.Text"
                 Call CopyMemory(m_uClientCutText.Text(0), .Data(.Pos + sizeof_RfbClientCutText), m_uClientCutText.Length)
             End If
             .Pos = .Pos + sizeof_RfbClientCutText + m_uClientCutText.Length
             If Not pvHandleCutEvent(m_uClientCutText) Then
+                GoTo QH
+            End If
+        Case rfbMsgTextChat
+            If .Size - .Pos < sizeof_RfbTextChatMsg Then
+                GoTo QH
+            End If
+            Call CopyMemory(uTextChatMsg, .Data(.Pos), sizeof_RfbClientCutText)
+            With uTextChatMsg
+                .Length = pvNetworkLong(.Length)
+            End With
+            If uTextChatMsg.Length > 0 Then
+                If .Size - .Pos < sizeof_RfbTextChatMsg + uTextChatMsg.Length Then
+                    GoTo QH
+                End If
+                .Pos = .Pos + sizeof_RfbTextChatMsg - 4
+                pvBufferReadUtf8 uInput, uTextChatMsg.Text
+            Else
+                .Pos = .Pos + sizeof_RfbTextChatMsg
+                uTextChatMsg.Text = vbNullString
+            End If
+            If Not pvHandleTextChatMsg(uTextChatMsg) Then
                 GoTo QH
             End If
         Case rfbMsgFileTransfer
@@ -1575,6 +1640,27 @@ Private Function pvHandleCutEvent(uEvent As RfbClientCutText) As Boolean
 EH:
     PrintError FUNC_NAME
 End Function
+
+Private Function pvHandleTextChatMsg(uEvent As RfbTextChatMsg) As Boolean
+    Const FUNC_NAME     As String = "pvHandleTextChatMsg"
+    
+    On Error GoTo EH
+    If uEvent.Length < 0 Then
+        pvParent.frFireOnTextChatMsg Me, -uEvent.Length
+    Else
+        pvParent.frFireOnTextChatMsg Me, 0, uEvent.Text
+    End If
+    '--- success
+    pvHandleTextChatMsg = True
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+    Resume Next
+End Function
+
+Friend Sub frFireOnTextChatMsg(oConn As cVncServer, ByVal MsgType As Long, Optional MsgText As String)
+    RaiseEvent OnTextChatMsg(ObjPtr(oConn), MsgType, MsgText)
+End Sub
 
 '= file transfer =========================================================
 
@@ -2609,15 +2695,17 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
             End Select
         End If
         '--- send desktop
+        lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
         If pvHasSupport(rfbEncCopyRect) Then
             lSize = uFrame.NumMoveRects
         End If
-        lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
-        With uUpdate
-            .MessageType = rfbMsgFramebufferUpdate
-            .NumberOfRectangles = pvNetworkShort(lSize + uFrame.NumTiles)
-        End With
-        pvBufferWriteBlob uOutput, VarPtr(uUpdate), sizeof_RfbServerFramebufferUpdate
+        If lSize + uFrame.NumTiles <> 0 Then
+            With uUpdate
+                .MessageType = rfbMsgFramebufferUpdate
+                .NumberOfRectangles = pvNetworkShort(lSize + uFrame.NumTiles)
+            End With
+            pvBufferWriteBlob uOutput, VarPtr(uUpdate), sizeof_RfbServerFramebufferUpdate
+        End If
         For lIdx = 0 To lSize - 1
             With .MoveRects(lIdx).DestinationRect
                 uRectangle.XPosition = pvNetworkShort(.Left)
@@ -2765,8 +2853,10 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                 #End If
             End If
             #If ImplUseDebugLog Then
-                If lIdx <= Form1.labDebug.UBound Then
-                    Form1.labDebug(lIdx).Caption = sDebugInfo
+                If Not DebugForm Is Nothing Then
+                    If lIdx <= DebugForm.labDebug.UBound Then
+                        DebugForm.labDebug(lIdx).Caption = sDebugInfo
+                    End If
                 End If
             #End If
             If uOutput.Size > uOutput.Pos + lBufferSize Then
@@ -2789,9 +2879,11 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
             End If
         Next
         #If ImplUseDebugLog Then
-            For lIdx = .NumTiles To Form1.labDebug.UBound
-                Form1.labDebug(lIdx).Caption = vbNullString
-            Next
+            If Not DebugForm Is Nothing Then
+                For lIdx = .NumTiles To DebugForm.labDebug.UBound
+                    DebugForm.labDebug(lIdx).Caption = vbNullString
+                Next
+            End If
         #End If
     End With
     If Not m_oSocket.HasPendingEvent Then
@@ -3195,7 +3287,7 @@ Private Function pvBufferSendAsync(uOutput As UcsBuffer) As Boolean
     Dim lBufferSize     As Long
     
     On Error GoTo EH
-    For eChannel = 0 To [_ucsChaMax] - 1
+    For eChannel = 0 To ucsChaMax
         If VarPtr(m_uSendBuffer(eChannel)) = VarPtr(uOutput) Then
             Exit For
         End If
@@ -3504,7 +3596,7 @@ Private Function PathCombine(sPath As String, sFile As String) As String
     PathCombine = sPath & IIf(LenB(sPath) <> 0 And Right$(sPath, 1) <> "\" And LenB(sFile) <> 0, "\", vbNullString) & sFile
 End Function
 
-Public Property Get At(vData As Variant, ByVal lIdx As Long, Optional sDefault As String) As String
+Private Property Get At(vData As Variant, ByVal lIdx As Long, Optional sDefault As String) As String
     On Error GoTo QH
     At = sDefault
     If IsArray(vData) Then
@@ -3611,7 +3703,7 @@ End Sub
 '=========================================================================
 
 #If Not ImplUseShared Then
-Public Function InitAddressOfMethod(pObj As Object, ByVal MethodParamCount As Long) As Object
+Private Function InitAddressOfMethod(pObj As Object, ByVal MethodParamCount As Long) As Object
     Dim STR_THUNK       As String: STR_THUNK = "6AAAAABag+oFV4v6ge9QEMEAgcekEcEAuP9EJAS5+QcAAPOri8LB4AgFuQAAAKuLwsHoGAUAjYEAq7gIAAArq7hEJASLq7hJCIsEq7iBi1Qkq4tEJAzB4AIFCIkCM6uLRCQMweASBcDCCACriTrHQgQBAAAAi0QkCIsAiUIIi0QkEIlCDIHqUBDBAIvCBTwRwQCri8IFUBHBAKuLwgVgEcEAq4vCBYQRwQCri8IFjBHBAKuLwgWUEcEAq4vCBZwRwQCri8IFpBHBALn5BwAAq4PABOL6i8dfgcJQEMEAi0wkEIkRK8LCEAAPHwCLVCQE/0IEi0QkDIkQM8DCDABmkItUJAT/QgSLQgTCBAAPHwCLVCQE/0oEi0IEg/gAfgPCBABZWotCDGgAgAAAagBSUf/gZpC4AUAAgMIIALgBQACAwhAAuAFAAIDCGAC4AUAAgMIkAA==" ' 25.3.2019 14:01:08
     Const THUNK_SIZE    As Long = 16728
     Dim hThunk          As Long
@@ -3625,7 +3717,7 @@ Public Function InitAddressOfMethod(pObj As Object, ByVal MethodParamCount As Lo
     Debug.Assert lSize = THUNK_SIZE
 End Function
 
-Public Function InitFireOnceTimerThunk(pObj As Object, ByVal pfnCallback As Long, Optional Delay As Long) As IUnknown
+Private Function InitFireOnceTimerThunk(pObj As Object, ByVal pfnCallback As Long, Optional Delay As Long) As IUnknown
     Dim STR_THUNK       As String: STR_THUNK = "6AAAAABag+oFgeogEQUAV1aLdCQUg8YIgz4AdCqL+oHHDBMFAIvCBSgSBQCri8IFZBIFAKuLwgV0EgUAqzPAq7kIAAAA86WBwgwTBQBSahj/UhBai/iLwqu4AQAAAKszwKuri3QkFKWlg+8Yi0IMSCX/AAAAUItKDDsMJHULWIsPV/9RFDP/62P/QgyBYgz/AAAAjQTKjQTIjUyIMIB5EwB101jHAf80JLiJeQTHQQiJRCQEi8ItDBMFAAWgEgUAUMHgCAW4AAAAiUEMWMHoGAUA/+CQiUEQiU8MUf90JBRqAGoAiw//URiJRwiLRCQYiTheX7g8EwUALSARBQAFABQAAMIQAGaQi0QkCIM4AHUqg3gEAHUkgXgIwAAAAHUbgXgMAAAARnUSi1QkBP9CBItEJAyJEDPAwgwAuAJAAIDCDACQi1QkBP9CBItCBMIEAA8fAItUJAT/SgSLQgR1HYtCDMZAEwCLCv9yCGoA/1Eci1QkBIsKUv9RFDPAwgQAi1QkBItCEIXAdFuLCotBKIXAdCdS/9Bag/gBd0mLClL/USxahcB1PosKUmrw/3Eg/1EkWqkAAAAIdSuLClL/cghqAP9RHFr/QgQzwFBU/3IQ/1IUi1QkCMdCCAAAAABS6G////9YwhQADx8AjURAAQ==" ' 13.5.2020 18:59:12
     Const THUNK_SIZE    As Long = 5660
     Static hThunk       As Long

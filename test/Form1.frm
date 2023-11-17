@@ -48,7 +48,8 @@ Attribute VB_PredeclaredId = True
 Attribute VB_Exposed = False
 Option Explicit
 
-Private m_oServer As cVncServer
+Private WithEvents m_oServer As cVncServer
+Attribute m_oServer.VB_VarHelpID = -1
 
 Private Sub Form_Load()
     Const DEF_PASSWORD  As String = "0000"
@@ -70,5 +71,18 @@ Private Sub Form_Load()
         m_oServer.Socket.GetSockName sAddress, lPort
         Label1.Caption = "Waiting for connection on " & sAddress & ":" & lPort & _
             IIf(LenB(m_oServer.Password) <> 0, " (password: " & m_oServer.Password & ")", vbNullString)
+    End If
+    Set DebugForm = Me
+End Sub
+
+Private Sub Form_Unload(Cancel As Integer)
+    Set DebugForm = Nothing
+End Sub
+
+Private Sub m_oServer_OnTextChatMsg(ByVal ConnID As Long, ByVal MsgType As Long, ByVal MsgText As String)
+    If MsgType = 1 Then
+        With New Form2
+            .Init m_oServer, ConnID
+        End With
     End If
 End Sub
