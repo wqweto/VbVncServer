@@ -73,6 +73,7 @@ Private Sub Form_Load()
             IIf(LenB(m_oServer.Password) <> 0, " (password: " & m_oServer.Password & ")", vbNullString)
     End If
     Set DebugForm = Me
+    Set ChatWindows = New Collection
 End Sub
 
 Private Sub Form_Unload(Cancel As Integer)
@@ -80,9 +81,17 @@ Private Sub Form_Unload(Cancel As Integer)
 End Sub
 
 Private Sub m_oServer_OnTextChatMsg(ByVal ConnID As Long, ByVal MsgType As Long, ByVal MsgText As String)
-    If MsgType = 1 Then
-        With New Form2
-            .Init m_oServer, ConnID
-        End With
+    Dim oFrmChat        As Form2
+
+    If MsgType = 0 Then
+        On Error Resume Next
+        Set oFrmChat = ChatWindows.Item("#" & ConnID)
+        On Error Resume Next
+        If oFrmChat Is Nothing Then
+            Set oFrmChat = New Form2
+            If oFrmChat.Init(m_oServer, ConnID) Then
+                ChatWindows.Add oFrmChat, "#" & ConnID
+            End If
+        End If
     End If
 End Sub

@@ -126,6 +126,7 @@ Private Declare Function SystemTimeToVariantTime Lib "oleaut32" (lpSystemTime As
 Private Declare Function GetFileAttributes Lib "kernel32" Alias "GetFileAttributesW" (ByVal lpFileName As Long) As Long
 Private Declare Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpDefaultChar As Long, ByVal lpUsedDefaultChar As Long) As Long
 Private Declare Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long) As Long
+Private Declare Function GetSystemDefaultLCID Lib "kernel32" () As Long
 '--- user32/gdi32
 Private Declare Sub mouse_event Lib "user32" (ByVal dwFlags As Long, ByVal dx As Long, ByVal dy As Long, ByVal cButtons As Long, ByVal dwExtraInfo As Long)
 Private Declare Function SendInput Lib "user32" (ByVal nInputs As Long, pInputs As Any, ByVal cbSize As Long) As Long
@@ -751,17 +752,17 @@ Public Function Init(Optional ListenAddress As String, Optional ByVal ListenPort
 QH:
 End Function
 
-Public Function TextChatMsg(ByVal ConnID As Long, MsgText As String) As Boolean
+Public Function TextChatMsg(ByVal ConnID As Long, ByVal MsgType As Long, Optional MsgText As String) As Boolean
     Dim oConn           As cVncServer
     
     If m_cConnections Is Nothing Then
-        If Not pvSendTextChatMsg(m_uSendBuffer(ucsChaChat), MsgText) Then
+        If Not pvSendTextChatMsg(m_uSendBuffer(ucsChaChat), MsgType, MsgText) Then
             GoTo QH
         End If
     Else
         For Each oConn In m_cConnections
             If ObjPtr(oConn) = ConnID Then
-                If Not oConn.TextChatMsg(0, MsgText) Then
+                If Not oConn.TextChatMsg(0, MsgType, MsgText) Then
                     GoTo QH
                 End If
             End If
@@ -841,7 +842,7 @@ Friend Sub frExclusiveConnection(oConn As cVncServer)
 End Sub
 
 Private Function pvSendProtocolVersion(uOutput As UcsBuffer) As Boolean
-    pvBufferWriteArray uOutput, StrConv(STR_PROTOCOL_VERSION, vbFromUnicode)
+    pvBufferWriteArray uOutput, StrConv(STR_PROTOCOL_VERSION, vbFromUnicode, GetSystemDefaultLCID())
     '--- success (or failure)
     pvSendProtocolVersion = pvBufferSendAsync(uOutput)
 End Function
@@ -878,7 +879,7 @@ Private Function pvSendSecurityResult(uOutput As UcsBuffer, ByVal lResult As Lon
     pvBufferWriteLong uOutput, lResult, Size:=4
     If LenB(sReason) <> 0 Then
         pvBufferWriteLong uOutput, Len(sReason), Size:=4
-        pvBufferWriteArray uOutput, StrConv(sReason, vbFromUnicode)
+        pvBufferWriteArray uOutput, StrConv(sReason, vbFromUnicode, GetSystemDefaultLCID())
     End If
     '--- success (or failure)
     pvSendSecurityResult = pvBufferSendAsync(uOutput)
@@ -928,7 +929,7 @@ Private Function pvSendServerInit(uOutput As UcsBuffer, ByVal lWidth As Long, By
         .NameLength = pvNetworkLong(Len(sName))
     End With
     pvBufferWriteBlob uOutput, VarPtr(uInit), sizeof_RfbServerInit
-    pvBufferWriteArray uOutput, StrConv(sName, vbFromUnicode)
+    pvBufferWriteArray uOutput, StrConv(sName, vbFromUnicode, GetSystemDefaultLCID())
     If m_eSecurityType = rfbSecTight Then
         pvInitTightCapabilities uServerMsgs, STR_TIGHT_SERVER_MSGS
         pvInitTightCapabilities uClientMsgs, STR_TIGHT_CLIENT_MSGS
@@ -1011,10 +1012,20 @@ Private Function pvSendPointerPosition(uOutput As UcsBuffer, ByVal lLeft As Long
     pvSendPointerPosition = pvBufferSendAsync(uOutput)
 End Function
 
-Private Function pvSendTextChatMsg(uOutput As UcsBuffer, MsgText As String) As Boolean
+Private Function pvSendTextChatMsg(uOutput As UcsBuffer, ByVal MsgType As Long, MsgText As String) As Boolean
+    Dim baText()        As Byte
+    
     pvBufferWriteLong uOutput, rfbMsgTextChat
     pvBufferWriteLong uOutput, 0, Size:=3
-    pvBufferWriteUtf8 uOutput, MsgText
+    If MsgType <> 0 Then
+        pvBufferWriteLong uOutput, -MsgType, Size:=4
+    ElseIf pvHasSupport(rfbEncUltra) Then
+        baText = StrConv(MsgText, vbFromUnicode, GetSystemDefaultLCID())
+        pvBufferWriteLong uOutput, UBound(baText) + 1, Size:=4
+        pvBufferWriteArray uOutput, baText
+    Else
+        pvBufferWriteUtf8 uOutput, MsgText
+    End If
     '--- success (or failure)
     pvSendTextChatMsg = pvBufferSendAsync(uOutput)
 End Function
@@ -1121,7 +1132,7 @@ DoAuth:
                         Exit Do
                     End If
                     baPassword = m_baSecurityChallenge
-                    If Not pvCryptoDesEncrypt(baPassword, StrConv(m_sPassword, vbFromUnicode)) Then
+                    If Not pvCryptoDesEncrypt(baPassword, StrConv(m_sPassword, vbFromUnicode, GetSystemDefaultLCID())) Then
                         GoTo QH
                     End If
                     If Not pvArrayEqual(.Data, .Pos, LNG_CHALLENGE_SIZE, baPassword) Then
@@ -1307,8 +1318,15 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 If .Size - .Pos < sizeof_RfbTextChatMsg + uTextChatMsg.Length Then
                     GoTo QH
                 End If
-                .Pos = .Pos + sizeof_RfbTextChatMsg - 4
-                pvBufferReadUtf8 uInput, uTextChatMsg.Text
+                If pvHasSupport(rfbEncUltra) Then
+                    pvArrayAllocate baData, uTextChatMsg.Length, FUNC_NAME & ".baData"
+                    Call CopyMemory(baData(0), .Data(.Pos + sizeof_RfbClientCutText), uTextChatMsg.Length)
+                    uTextChatMsg.Text = StrConv(baData, vbUnicode, GetSystemDefaultLCID())
+                    .Pos = .Pos + sizeof_RfbTextChatMsg + uTextChatMsg.Length
+                Else
+                    .Pos = .Pos + sizeof_RfbTextChatMsg - 4
+                    pvBufferReadUtf8 uInput, uTextChatMsg.Text
+                End If
             Else
                 .Pos = .Pos + sizeof_RfbTextChatMsg
                 uTextChatMsg.Text = vbNullString
@@ -1536,7 +1554,7 @@ Private Function pvHandleKeyEvent(uEvent As RfbClientKeyEvent) As Boolean
             uInput.dwFlags = uInput.dwFlags Or KEYEVENTF_EXTENDEDKEY
         End If
     ElseIf (uEvent.Key And UNICODE_FLAG) <> 0 Then
-        uInput.wScan = uEvent.Key And Not UNICODE_FLAG
+        uInput.wScan = uEvent.Key And &H7FFF
         uInput.dwFlags = uInput.dwFlags Or KEYEVENTF_UNICODE
     Else
         Select Case uEvent.Key
@@ -1550,7 +1568,7 @@ Private Function pvHandleKeyEvent(uEvent As RfbClientKeyEvent) As Boolean
     pvHandleKeyEvent = True
     Exit Function
 EH:
-    PrintError FUNC_NAME
+    PrintError FUNC_NAME & "(uEvent.Key=&H" & Hex$(uEvent.Key) & ")"
 End Function
 
 Private Function pvMapToVirtualKey(ByVal lKey As Long, nVk As Integer, bExtended As Boolean) As Boolean
@@ -1633,7 +1651,7 @@ Private Function pvHandleCutEvent(uEvent As RfbClientCutText) As Boolean
     
     On Error GoTo EH
     Clipboard.Clear
-    Clipboard.SetText Replace(StrConv(uEvent.Text, vbUnicode), vbLf, vbCrLf)
+    Clipboard.SetText Replace(StrConv(uEvent.Text, vbUnicode, GetSystemDefaultLCID()), vbLf, vbCrLf)
     '--- success
     pvHandleCutEvent = True
     Exit Function
@@ -1777,7 +1795,7 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
     On Error GoTo EH
     If uMsg.ContentType <> rfbFtpFilePacket And uMsg.ContentType <> rfbFtpFileChecksums Then
         If UBound(baData) >= 0 Then
-            sPath = StrConv(baData, vbUnicode)
+            sPath = StrConv(baData, vbUnicode, GetSystemDefaultLCID())
         End If
     End If
     #If ImplUseDebugLog Then
@@ -1825,7 +1843,7 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
                 End If
             Else
                 lBufferSize = m_oSocket.SockOpt(ucsSsoSendBuffer)
-                baBuffer = StrConv(sPath, vbFromUnicode)
+                baBuffer = StrConv(sPath, vbFromUnicode, GetSystemDefaultLCID())
                 If Not pvSendFileTransfer(uOutput, rfbFtpDirPacket, rfbFtpADirectory, Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer)) Then
                     GoTo QH
                 End If
@@ -1882,7 +1900,7 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
             eStatus = rfbFtpSErrorCmd
             sPath = vbNullString
         End Select
-        baBuffer = StrConv(sPath, vbFromUnicode)
+        baBuffer = StrConv(sPath, vbFromUnicode, GetSystemDefaultLCID())
         If Not pvSendFileTransfer(uOutput, rfbFtpCommandReturn, uMsg.ContentParam, ContentSize:=eStatus, _
                 Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer)) Then
             GoTo QH
@@ -1918,7 +1936,7 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
             sPath = sPath & "," & Format$(pvGetFileDateTime(sPath), FORMAT_FILEDATETIME)
         End If
         Call CopyMemory(uStreamSize, cStreamSize, 8)
-        baBuffer = StrConv(sPath, vbFromUnicode)
+        baBuffer = StrConv(sPath, vbFromUnicode, GetSystemDefaultLCID())
         If Not pvSendFileTransfer(uOutput, rfbFtpFileHeader, 0, _
                 ContentSize:=uStreamSize.LowPart, HighContentSize:=uStreamSize.HighPart, _
                 Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer), DelaySend:=True) Then
@@ -1939,7 +1957,7 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
         If pvCheckHResult(pvCreateStreamOnFile(m_sFtpRecvFileName, STGM_WRITE Or STGM_CREATE, m_pFtpRecvStream)) < 0 Then
             eStatus = rfbFtpSErrorCmd
         End If
-        baBuffer = StrConv(m_sFtpRecvFileName, vbFromUnicode)
+        baBuffer = StrConv(m_sFtpRecvFileName, vbFromUnicode, GetSystemDefaultLCID())
         If Not pvSendFileTransfer(uOutput, rfbFtpFileAcceptHeader, ContentSize:=eStatus, _
                 Ptr:=pvArrayPtr(baBuffer), Size:=pvArraySize(baBuffer)) Then
             GoTo QH
@@ -3079,6 +3097,8 @@ Private Function pvGetEncodingBit(ByVal eEncoding As RfbEncodingEnum) As Long
         pvGetEncodingBit = 2 ^ 7
     Case rfbEncPsPointerPosition
         pvGetEncodingBit = 2 ^ 8
+    Case rfbEncUltra
+        pvGetEncodingBit = 2 ^ 9
     End Select
 End Function
 

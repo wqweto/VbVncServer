@@ -56,13 +56,22 @@ Private WithEvents m_oServer    As cVncServer
 Attribute m_oServer.VB_VarHelpID = -1
 Private m_lConnID               As Long
 
-Public Function Init(oServer As cVncServer, ByVal ConnID As Long)
+Property Get ConnID() As Long
+    ConnID = m_lConnID
+End Property
+
+Public Function Init(oServer As cVncServer, ByVal ConnID As Long) As Boolean
     Set m_oServer = oServer
     m_lConnID = ConnID
     Show
+    '--- success
+    Init = True
 End Function
 
 Private Sub pvAppendText(ByVal sText As String)
+    If Right$(sText, 2) <> vbCrLf Then
+        sText = sText & vbCrLf
+    End If
     With Text1
         .SelStart = &H7FFF
         If .SelStart + Len(sText) > &H7FFF& Then
@@ -76,19 +85,15 @@ Private Sub pvAppendText(ByVal sText As String)
 End Sub
 
 Private Sub m_oServer_OnTextChatMsg(ByVal ConnID As Long, ByVal MsgType As Long, ByVal MsgText As String)
-    If ConnID = m_lConnID Then
-        If MsgType = 0 Then
-            pvAppendText m_lConnID & ": " & MsgText
-        ElseIf MsgType = 2 Then
-            Unload Me
-        End If
+    If ConnID = m_lConnID And MsgType = 0 Then
+        pvAppendText m_lConnID & ": " & MsgText
     End If
 End Sub
 
 Private Sub Text2_KeyPress(KeyAscii As Integer)
     If KeyAscii = 13 Then
-        If m_oServer.TextChatMsg(m_lConnID, Text2.Text & vbCrLf) Then
-            pvAppendText "Me: " & Text2.Text & vbCrLf
+        If m_oServer.TextChatMsg(m_lConnID, 0, Text2.Text & vbCrLf) Then
+            pvAppendText "Me: " & Text2.Text
             Text2.Text = vbNullString
         End If
         KeyAscii = 0
@@ -100,4 +105,9 @@ Private Sub Form_Resize()
         Text2.Move 30, ScaleHeight - Text2.Height - 30, ScaleWidth - 60
         Text1.Move 0, 0, ScaleWidth, Text2.Top - 60
     End If
+End Sub
+
+Private Sub Form_Unload(Cancel As Integer)
+    m_oServer.TextChatMsg m_lConnID, 2
+    ChatWindows.Remove "#" & m_lConnID
 End Sub
