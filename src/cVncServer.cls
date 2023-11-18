@@ -25,7 +25,9 @@ Option Explicit
 DefObj A-Z
 Private Const MODULE_NAME As String = "cVncServer"
 
-#Const ImplZlib = (VNC_NOZLIB = 0)
+#Const ImplFileTransfer = (VNC_NO_FILE_TRANSFER = 0)
+#Const ImplTextChat = (VNC_NO_TEXT_CHAT = 0)
+#Const ImplZlib = (VNC_NO_ZLIB = 0)
 #Const ImplHistograms = (VNC_HISTOGRAMS = 1)
 #Const ImplNoIdeProtection = (MST_NO_IDE_PROTECTION <> 0)
 #Const ImplUseDebugLog = (USE_DEBUG_LOG <> 0)
@@ -753,23 +755,25 @@ QH:
 End Function
 
 Public Function TextChatMsg(ByVal ConnID As Long, ByVal MsgType As Long, Optional MsgText As String) As Boolean
-    Dim oConn           As cVncServer
-    
-    If m_cConnections Is Nothing Then
-        If Not pvSendTextChatMsg(m_uSendBuffer(ucsChaChat), MsgType, MsgText) Then
-            GoTo QH
-        End If
-    Else
-        For Each oConn In m_cConnections
-            If ObjPtr(oConn) = ConnID Then
-                If Not oConn.TextChatMsg(0, MsgType, MsgText) Then
-                    GoTo QH
-                End If
+    #If ImplTextChat Then
+        Dim oConn           As cVncServer
+        
+        If m_cConnections Is Nothing Then
+            If Not pvSendTextChatMsg(m_uSendBuffer(ucsChaChat), MsgType, MsgText) Then
+                GoTo QH
             End If
-        Next
-    End If
-    '--- success
-    TextChatMsg = True
+        Else
+            For Each oConn In m_cConnections
+                If ObjPtr(oConn) = ConnID Then
+                    If Not oConn.TextChatMsg(0, MsgType, MsgText) Then
+                        GoTo QH
+                    End If
+                End If
+            Next
+        End If
+        '--- success
+        TextChatMsg = True
+    #End If
 QH:
 End Function
 
@@ -1012,24 +1016,6 @@ Private Function pvSendPointerPosition(uOutput As UcsBuffer, ByVal lLeft As Long
     pvSendPointerPosition = pvBufferSendAsync(uOutput)
 End Function
 
-Private Function pvSendTextChatMsg(uOutput As UcsBuffer, ByVal MsgType As Long, MsgText As String) As Boolean
-    Dim baText()        As Byte
-    
-    pvBufferWriteLong uOutput, rfbMsgTextChat
-    pvBufferWriteLong uOutput, 0, Size:=3
-    If MsgType <> 0 Then
-        pvBufferWriteLong uOutput, -MsgType, Size:=4
-    ElseIf pvHasSupport(rfbEncUltra) Then
-        baText = StrConv(MsgText, vbFromUnicode, GetSystemDefaultLCID())
-        pvBufferWriteLong uOutput, UBound(baText) + 1, Size:=4
-        pvBufferWriteArray uOutput, baText
-    Else
-        pvBufferWriteUtf8 uOutput, MsgText
-    End If
-    '--- success (or failure)
-    pvSendTextChatMsg = pvBufferSendAsync(uOutput)
-End Function
-
 Private Sub pvHandleReceive(uOutput As UcsBuffer)
     Const FUNC_NAME     As String = "pvHandleReceive"
     Const SecurityResultOk As Long = 0
@@ -1179,11 +1165,15 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
     Const FUNC_NAME     As String = "pvHandleClientMessage"
     Dim lIdx            As Long
     Dim uPointerEvent   As RfbClientPointerEvent
+#If ImplFileTransfer Then
     Dim uFileTransfer   As RfbFileTransfer
     Dim baData()        As Byte
     Dim uTightTransfer  As UcsTightTransfer
     Dim lSize           As Long
+#End If
+#If ImplTextChat Then
     Dim uTextChatMsg    As RfbTextChatMsg
+#End If
     
     On Error GoTo EH
     With uInput
@@ -1229,9 +1219,11 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                         Case rfbEncPsJpegQualityLevel To rfbEncPsJpegQualityLevel + 9
                             .JpegQualityLevel = .EncodingType(lIdx) - rfbEncPsJpegQualityLevel + 1
                         Case rfbEncPsFTProtocolVersion
-                            If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpFileTransferProtocolVersion, rfbFtpProtocolVersion) Then
-                                GoTo QH
-                            End If
+                            #If ImplFileTransfer Then
+                                If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpFileTransferProtocolVersion, rfbFtpProtocolVersion) Then
+                                    GoTo QH
+                                End If
+                            #End If
                         Case rfbEncPsExtendedDesktopSize, rfbEncPsDesktopSize
                             .NeedDesktopSizes = 1
                         Case rfbEncRaw, rfbEncRRE, rfbEncCoRRE, rfbEncHextile, rfbEncZlibHextile, rfbEncUltra, rfbEncUltra2, rfbEncTRLE, rfbEncZRLE, _
@@ -1306,6 +1298,7 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
             If Not pvHandleCutEvent(m_uClientCutText) Then
                 GoTo QH
             End If
+#If ImplTextChat Then
         Case rfbMsgTextChat
             If .Size - .Pos < sizeof_RfbTextChatMsg Then
                 GoTo QH
@@ -1334,6 +1327,8 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
             If Not pvHandleTextChatMsg(uTextChatMsg) Then
                 GoTo QH
             End If
+#End If
+#If ImplFileTransfer Then
         Case rfbMsgFileTransfer
             If .Size - .Pos < sizeof_RfbFileTransfer Then
                 GoTo QH
@@ -1501,6 +1496,7 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
             If Not pvHandleTightFileTransfer(m_uSendBuffer(ucsChaFtp), uTightTransfer, baData) Then
                 GoTo QH
             End If
+#End If
         Case rfbMsgSetDesktopSize
             If .Size - .Pos < 8 Then
                 GoTo QH
@@ -1659,29 +1655,9 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvHandleTextChatMsg(uEvent As RfbTextChatMsg) As Boolean
-    Const FUNC_NAME     As String = "pvHandleTextChatMsg"
-    
-    On Error GoTo EH
-    If uEvent.Length < 0 Then
-        pvParent.frFireOnTextChatMsg Me, -uEvent.Length
-    Else
-        pvParent.frFireOnTextChatMsg Me, 0, uEvent.Text
-    End If
-    '--- success
-    pvHandleTextChatMsg = True
-    Exit Function
-EH:
-    PrintError FUNC_NAME
-    Resume Next
-End Function
-
-Friend Sub frFireOnTextChatMsg(oConn As cVncServer, ByVal MsgType As Long, Optional MsgText As String)
-    RaiseEvent OnTextChatMsg(ObjPtr(oConn), MsgType, MsgText)
-End Sub
-
 '= file transfer =========================================================
 
+#If ImplFileTransfer Then
 Private Function pvSendFileTransfer( _
             uOutput As UcsBuffer, _
             ByVal ContentType As RfbFileTransferProtocolEnum, _
@@ -2158,6 +2134,50 @@ EH:
     PrintError FUNC_NAME
     Resume QH
 End Function
+#End If
+
+'= text chat =============================================================
+
+#If ImplTextChat Then
+Private Function pvSendTextChatMsg(uOutput As UcsBuffer, ByVal MsgType As Long, MsgText As String) As Boolean
+    Dim baText()        As Byte
+    
+    pvBufferWriteLong uOutput, rfbMsgTextChat
+    pvBufferWriteLong uOutput, 0, Size:=3
+    If MsgType <> 0 Then
+        pvBufferWriteLong uOutput, -MsgType, Size:=4
+    ElseIf pvHasSupport(rfbEncUltra) Then
+        baText = StrConv(MsgText, vbFromUnicode, GetSystemDefaultLCID())
+        pvBufferWriteLong uOutput, UBound(baText) + 1, Size:=4
+        pvBufferWriteArray uOutput, baText
+    Else
+        pvBufferWriteUtf8 uOutput, MsgText
+    End If
+    '--- success (or failure)
+    pvSendTextChatMsg = pvBufferSendAsync(uOutput)
+End Function
+
+Private Function pvHandleTextChatMsg(uEvent As RfbTextChatMsg) As Boolean
+    Const FUNC_NAME     As String = "pvHandleTextChatMsg"
+    
+    On Error GoTo EH
+    If uEvent.Length < 0 Then
+        pvParent.frFireOnTextChatMsg Me, -uEvent.Length
+    Else
+        pvParent.frFireOnTextChatMsg Me, 0, uEvent.Text
+    End If
+    '--- success
+    pvHandleTextChatMsg = True
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+    Resume Next
+End Function
+
+Friend Sub frFireOnTextChatMsg(oConn As cVncServer, ByVal MsgType As Long, Optional MsgText As String)
+    RaiseEvent OnTextChatMsg(ObjPtr(oConn), MsgType, MsgText)
+End Sub
+#End If
 
 '= desktop duplication ===================================================
 
@@ -2230,13 +2250,15 @@ QH:
 End Function
 
 Friend Function frNotifyAfterSendFrame() As Boolean
-    If Not m_pFtpSendStream Is Nothing And m_bFtpSendRunning Then
-        If m_uSendBuffer(ucsChaFrame).Size <= m_uSendBuffer(ucsChaFrame).Pos Then
-            If Not pvSendFileTransferFileContent(m_uSendBuffer(ucsChaFtp), m_pFtpSendStream, m_sFtpSendArchiveFile, m_pFtpSendChecksums) Then
-                GoTo QH
+    #If ImplFileTransfer Then
+        If Not m_pFtpSendStream Is Nothing And m_bFtpSendRunning Then
+            If m_uSendBuffer(ucsChaFrame).Size <= m_uSendBuffer(ucsChaFrame).Pos Then
+                If Not pvSendFileTransferFileContent(m_uSendBuffer(ucsChaFtp), m_pFtpSendStream, m_sFtpSendArchiveFile, m_pFtpSendChecksums) Then
+                    GoTo QH
+                End If
             End If
         End If
-    End If
+    #End If
     '--- success
     frNotifyAfterSendFrame = True
 QH:
@@ -2571,7 +2593,6 @@ End Function
 
 Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) As Boolean
     Const FUNC_NAME     As String = "pvCaptureSend"
-    Const LEVEL_CUTOFF  As Long = 85
     Dim lIdx            As Long
     Dim lX              As Long
     Dim lY              As Long
@@ -2582,9 +2603,6 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
     Dim aRedLut()       As Long
     Dim aGreenLut()     As Long
     Dim aBlueLut()      As Long
-    Dim aRedHist()      As Long
-    Dim aGreenHist()    As Long
-    Dim aBlueHist()     As Long
     Dim uUpdate         As RfbServerFramebufferUpdate
     Dim uRectangle      As RfbServerRectangle
     Dim lSrcIndex       As Long
@@ -2599,6 +2617,10 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
     Dim lQualityLevel   As Long
     Dim lColor1         As Long
 #If ImplHistograms Then
+    Const LEVEL_CUTOFF  As Long = 85
+    Dim aRedHist()      As Long
+    Dim aGreenHist()    As Long
+    Dim aBlueHist()     As Long
     Dim aHistogram()    As Long
     Dim lColor2         As Long
 #End If
