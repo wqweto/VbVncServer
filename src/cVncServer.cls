@@ -60,7 +60,6 @@ Private Const SM_SWAPBUTTON                 As Long = 23
 '--- for RedrawWindow
 Private Const RDW_INVALIDATE                As Long = &H1
 Private Const RDW_ALLCHILDREN               As Long = &H80
-Private Const RDW_ERASENOW                  As Long = &H200
 '--- for IStream_Seek
 Private Const STREAM_SEEK_SET               As Long = 0
 Private Const STREAM_SEEK_CUR               As Long = 1
@@ -184,11 +183,11 @@ Private Declare Function IPropertyBag2_Write_Proxy Lib "windowscodecs" (ByVal pP
     Private Declare Function GetProcAddress Lib "kernel32" (ByVal hModule As Long, ByVal lpProcName As String) As Long
     Private Declare Function GetCurrentProcessId Lib "kernel32" () As Long
     #If Not ImplNoIdeProtection Then
-        Private Declare Function FindWindowEx Lib "user32" Alias "FindWindowExA" (ByVal hWndParent As Long, ByVal hWndChildAfter As Long, ByVal lpszClass As String, ByVal lpszWindow As String) As Long
+        Private Declare Function FindWindowEx Lib "user32" Alias "FindWindowExW" (ByVal hWndParent As Long, ByVal hWndChildAfter As Long, ByVal lpszClass As Long, ByVal lpszWindow As Long) As Long
         Private Declare Function GetWindowThreadProcessId Lib "user32" (ByVal hWnd As Long, lpdwProcessId As Long) As Long
     #End If
-    Private Declare Function GetEnvironmentVariable Lib "kernel32" Alias "GetEnvironmentVariableA" (ByVal lpName As String, ByVal lpBuffer As String, ByVal nSize As Long) As Long
-    Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnvironmentVariableA" (ByVal lpName As String, ByVal lpValue As String) As Long
+    Private Declare Function GetEnvironmentVariable Lib "kernel32" Alias "GetEnvironmentVariableW" (ByVal lpName As Long, ByVal lpBuffer As Long, ByVal nSize As Long) As Long
+    Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnvironmentVariableW" (ByVal lpName As Long, ByVal lpValue As Long) As Long
 #End If
 Private Declare Function D3D11CreateDevice Lib "d3d11" (ByVal pAdapter As IUnknown, ByVal DriverType As D3D_DRIVER_TYPE, ByVal Software As Long, ByVal Flags As D3D11_CREATE_DEVICE_FLAG, pFeatureLevels As Any, ByVal FeatureLevels As Long, ByVal SDKVersion As Long, ppDevice As ID3D11Device, pFeatureLevel As D3D_FEATURE_LEVEL, ppImmediateContext As ID3D11DeviceContext) As VBHRESULT
 Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBD3D11.VBGUID, ppFactory As IDXGIFactory1) As VBHRESULT
@@ -345,7 +344,7 @@ Private Type RfbClientSetPixelFormat
     MessageType         As Long
     PixelFormat         As RfbPixelFormat
 End Type
-Private Const UcsClientSetPixelFormatSize As Long = 4 + sizeof_RfbPixelFormat
+Private Const sizeof_RfbClientSetPixelFormat As Long = 4 + sizeof_RfbPixelFormat
 
 Private Type RfbClientSetEncodings
     MessageType         As Integer
@@ -355,6 +354,7 @@ Private Type RfbClientSetEncodings
     CompressionLevel    As Long
     JpegQualityLevel    As Long
     NeedDesktopSizes    As Long
+    PrefEncoding        As Long
 End Type
 Private Const sizeof_RfbClientSetEncodings As Long = 4
 
@@ -552,6 +552,8 @@ Private Const STR_ZIP_SUFFIX        As String = ".zip"
 Private Const sizeof_ZIP_SUFFIX     As Long = 4
 Private Const LNG_TILE_SIZE         As Long = 256
 Private Const LNG_CHALLENGE_SIZE    As Long = 16
+Private Const LNG_TIGHT_MIN_TO_COMPRESS As Long = 12
+Private Const LNG_MAX_BUFFER_SIZE   As Long = 5& * 1024 * 1024
 
 Private m_cConnections          As Collection
 Private m_sPassword             As String
@@ -595,6 +597,7 @@ Private Type UcsBuffer
     Data()              As Byte
     Pos                 As Long
     Size                As Long
+    Paused              As Boolean
 End Type
 
 Private Type UcsCaptureContext
@@ -716,7 +719,7 @@ Private Property Get pvFirstPendingChannel() As UcsSendChannelEnum
     
     pvFirstPendingChannel = -1
     For eChannel = 0 To ucsChaMax
-        If m_uSendBuffer(eChannel).Size > m_uSendBuffer(eChannel).Pos Then
+        If Not m_uSendBuffer(eChannel).Paused And m_uSendBuffer(eChannel).Size > m_uSendBuffer(eChannel).Pos Then
             pvFirstPendingChannel = eChannel
             Exit For
         End If
@@ -1180,16 +1183,16 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
 '        DebugLog MODULE_NAME, FUNC_NAME, "Message=" & .Data(.Pos)
         Select Case .Data(.Pos)
         Case rfbMsgSetPixelFormat
-            If .Size - .Pos < UcsClientSetPixelFormatSize Then
+            If .Size - .Pos < sizeof_RfbClientSetPixelFormat Then
                 GoTo QH
             End If
-            Call CopyMemory(m_uClientPixelFormat, .Data(.Pos), UcsClientSetPixelFormatSize)
+            Call CopyMemory(m_uClientPixelFormat, .Data(.Pos), sizeof_RfbClientSetPixelFormat)
             With m_uClientPixelFormat.PixelFormat
                 .RedMax = pvNetworkShort(.RedMax)
                 .GreenMax = pvNetworkShort(.GreenMax)
                 .BlueMax = pvNetworkShort(.BlueMax)
             End With
-            .Pos = .Pos + UcsClientSetPixelFormatSize
+            .Pos = .Pos + sizeof_RfbClientSetPixelFormat
             Debug.Assert m_uClientPixelFormat.PixelFormat.BitsPerPixel <= 32
         Case rfbMsgSetEncodings
             If .Size - .Pos < sizeof_RfbClientSetEncodings Then
@@ -1210,6 +1213,7 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                     .CompressionLevel = 0
                     .JpegQualityLevel = 0
                     .NeedDesktopSizes = 0
+                    .PrefEncoding = -1
                     For lIdx = 0 To .NumberOfEncodings - 1
                         .EncodingType(lIdx) = pvNetworkLong(.EncodingType(lIdx))
                         pvHasSupport(.EncodingType(lIdx)) = True
@@ -1220,13 +1224,17 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                             .JpegQualityLevel = .EncodingType(lIdx) - rfbEncPsJpegQualityLevel + 1
                         Case rfbEncPsFTProtocolVersion
                             #If ImplFileTransfer Then
-                                If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFtp), rfbFtpFileTransferProtocolVersion, rfbFtpProtocolVersion) Then
+                                If Not pvSendFileTransfer(m_uSendBuffer(ucsChaFrame), rfbFtpFileTransferProtocolVersion, rfbFtpProtocolVersion) Then
                                     GoTo QH
                                 End If
                             #End If
                         Case rfbEncPsExtendedDesktopSize, rfbEncPsDesktopSize
                             .NeedDesktopSizes = 1
-                        Case rfbEncRaw, rfbEncRRE, rfbEncCoRRE, rfbEncHextile, rfbEncZlibHextile, rfbEncUltra, rfbEncUltra2, rfbEncTRLE, rfbEncZRLE, _
+                        Case rfbEncRaw, rfbEncZlib, rfbEncTight
+                            If .PrefEncoding < 0 Then
+                                .PrefEncoding = .EncodingType(lIdx)
+                            End If
+                        Case rfbEncRRE, rfbEncCoRRE, rfbEncHextile, rfbEncZlibHextile, rfbEncUltra, rfbEncUltra2, rfbEncTRLE, rfbEncZRLE, _
                                 rfbEncHitachiZYWRLE, rfbEncJPEG, rfbEncJRLE, rfbEncJRLE2, rfbEncTightPNG, _
                                 rfbEncPsPointerPosition, rfbEncPsLastRect, rfbEncPsExtendedClipboard
                             '--- do nothing
@@ -1254,7 +1262,11 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
             End With
             .Pos = .Pos + sizeof_RfbClientFramebufferUpdateRequest
             If m_uClientFramebufferUpdate.Incremental = 0 Then
-                Call RedrawWindow(0, ByVal 0, 0, RDW_INVALIDATE Or RDW_ALLCHILDREN Or RDW_ERASENOW)
+                Call RedrawWindow(0, ByVal 0, 0, RDW_INVALIDATE Or RDW_ALLCHILDREN)
+                If Not m_oZipArchive Is Nothing Then
+                    m_oZipArchive.DeflateEnd m_hDeflateCtx
+                    Set m_oZipArchive = Nothing
+                End If
             End If
         Case rfbMsgKeyEvent
             If .Size - .Pos < sizeof_RfbClientKeyEvent Then
@@ -2199,7 +2211,6 @@ Attribute TimerProc.VB_MemberFlags = "40"
             If m_uCaptureCtx.Duplication Is Nothing Then
                 frCaptureSetupDeviceIndex
             End If
-            GoTo QH
         End If
     End If
     For Each oConn In m_cConnections
@@ -2236,10 +2247,11 @@ Friend Function frNotifySendFrame(uCaptureFrame As UcsCaptureFrame) As Boolean
             GoTo QH
         End If
     ElseIf uCaptureFrame.NumTiles + uCaptureFrame.NumMoveRects + uCaptureFrame.PointerShapeBufferSize = 0 And uCaptureFrame.PointerPosition.Position.X = -1 Then
-        If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
-            GoTo QH
-        End If
+        '--- do nothing
     Else
+        If m_uSendBuffer(ucsChaFrame).Paused And m_uSendBuffer(ucsChaFrame).Size > LNG_MAX_BUFFER_SIZE Then
+            m_uSendBuffer(ucsChaFrame).Size = 0
+        End If
         If Not pvCaptureSend(uCaptureFrame, m_uSendBuffer(ucsChaFrame)) Then
             GoTo QH
         End If
@@ -2252,7 +2264,7 @@ End Function
 Friend Function frNotifyAfterSendFrame() As Boolean
     #If ImplFileTransfer Then
         If Not m_pFtpSendStream Is Nothing And m_bFtpSendRunning Then
-            If m_uSendBuffer(ucsChaFrame).Size <= m_uSendBuffer(ucsChaFrame).Pos Then
+            If m_uSendBuffer(ucsChaFrame).Paused Or m_uSendBuffer(ucsChaFrame).Size <= m_uSendBuffer(ucsChaFrame).Pos Then
                 If Not pvSendFileTransferFileContent(m_uSendBuffer(ucsChaFtp), m_pFtpSendStream, m_sFtpSendArchiveFile, m_pFtpSendChecksums) Then
                     GoTo QH
                 End If
@@ -2711,7 +2723,7 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                                     End If
                                 End If
                             Next
-                            pvBufferWriteBlob uOutput, pvArrayPtr(baRow), .PointerInfo.Width * lBytesPerPixel
+                            pvBufferWriteBlob uOutput, VarPtr(baRow(0)), .PointerInfo.Width * lBytesPerPixel
                         Next
                     Case Else
                         pvBufferWriteBlob uOutput, 0, .PointerInfo.Height * .PointerInfo.Width * lBytesPerPixel
@@ -2773,7 +2785,7 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
             lPitch = (.DirtyRects(lSrcIndex).Right - .DirtyRects(lSrcIndex).Left) * 4
             lPtr = VarPtr(.DirtyBuffers(lSrcIndex).Data(0))
             uTile.Size = 0
-            If pvHasSupport(rfbEncTight) And m_uClientEncodings.JpegQualityLevel > 0 And lBytesPerPixel > 1 Then
+            If m_uClientEncodings.PrefEncoding = rfbEncTight And m_uClientEncodings.JpegQualityLevel > 0 And lBytesPerPixel > 1 Then
                 #If ImplHistograms Then
                     ReDim aHistogram(0 To 255) As Long
                     For lY = .Tiles(lIdx).Top To .Tiles(lIdx).Top + .Tiles(lIdx).Height - 1
@@ -2831,7 +2843,7 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                 pvBufferWriteStream uOutput, m_pImageStream
             Else
                 #If ImplZlib Then
-                    If pvHasSupport(rfbEncTight) And m_uClientEncodings.CompressionLevel > 0 And lBytesPerPixel = 4 Then
+                    If m_uClientEncodings.PrefEncoding = rfbEncTight And m_uClientEncodings.CompressionLevel > 0 And lBytesPerPixel = 4 Then
                         lBytesPerPixel = 3
                     End If
                 #End If
@@ -2851,7 +2863,7 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                                     baRow(lX * 2 + 1) = lColor1 \ &H100&
                                 End If
                             Next
-                            pvBufferWriteBlob uTile, pvArrayPtr(baRow), .Tiles(lIdx).Width
+                            pvBufferWriteBlob uTile, VarPtr(baRow(0)), .Tiles(lIdx).Width * lBytesPerPixel
                         ElseIf lBytesPerPixel = 3 Then
                             Debug.Assert IsBadReadPtr(lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4) = 0
                             Debug.Assert .Tiles(lIdx).Width * 4 <= UBound(baRow) - 3
@@ -2861,7 +2873,7 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                                 baRow(lX * 3 + 1) = baRow(4 + lX * 4 + 1)
                                 baRow(lX * 3 + 2) = baRow(4 + lX * 4 + 0)
                             Next
-                            pvBufferWriteBlob uTile, pvArrayPtr(baRow), .Tiles(lIdx).Width * 3
+                            pvBufferWriteBlob uTile, VarPtr(baRow(0)), .Tiles(lIdx).Width * 3
                         Else
                             pvBufferWriteBlob uTile, lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4
                         End If
@@ -2870,17 +2882,21 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                     pvBufferWriteBlob uTile, 0, .Tiles(lIdx).Height * .Tiles(lIdx).Width * lBytesPerPixel
                 End Select
                 #If ImplZlib Then
-                    If pvHasSupport(rfbEncTight) And m_uClientEncodings.CompressionLevel > 0 Then
+                    If m_uClientEncodings.PrefEncoding = rfbEncTight And m_uClientEncodings.CompressionLevel > 0 Then
                         pvBufferWriteLong uOutput, rfbEncTight, Size:=4
-                        lSize = uOutput.Size
-                        '--- compression control: &H0 = no reset, use stream 0, no filter
-                        pvBufferWriteLong uOutput, &H0
-                        pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size, CompactSize:=True
-                        #If ImplUseDebugLog Then
-                            cTemp = (uOutput.Size - lSize) * 100 / (.Tiles(lIdx).Width * .Tiles(lIdx).Height * 4)
-                            sDebugInfo = sDebugInfo & " ZLib=" & Format$(cTemp, "0.00") & "%"
-                        #End If
-                    ElseIf pvHasSupport(rfbEncZlib) Then
+                        '--- compression control: &H0 = no reset, use stream 0, no filter; &H1 = reset, use stream 0, no filter
+                        pvBufferWriteLong uOutput, IIf(m_oZipArchive Is Nothing, &H1, &H0)
+                        If uTile.Size < LNG_TIGHT_MIN_TO_COMPRESS Then
+                            pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
+                        Else
+                            lSize = uOutput.Size
+                            pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size, CompactSize:=True
+                            #If ImplUseDebugLog Then
+                                cTemp = (uOutput.Size - lSize) * 100 / (.Tiles(lIdx).Width * .Tiles(lIdx).Height * 4)
+                                sDebugInfo = sDebugInfo & " ZLib=" & Format$(cTemp, "0.00") & "%"
+                            #End If
+                        End If
+                    ElseIf m_uClientEncodings.PrefEncoding = rfbEncTight Then
                         pvBufferWriteLong uOutput, rfbEncZlib, Size:=4
                         pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
                     Else
@@ -3329,6 +3345,11 @@ Private Function pvBufferSendAsync(uOutput As UcsBuffer) As Boolean
     Dim lBufferSize     As Long
     
     On Error GoTo EH
+    If uOutput.Paused Then
+        '--- keep spooling
+        pvBufferSendAsync = True
+        GoTo QH
+    End If
     For eChannel = 0 To ucsChaMax
         If VarPtr(m_uSendBuffer(eChannel)) = VarPtr(uOutput) Then
             Exit For
