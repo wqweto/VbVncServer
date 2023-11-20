@@ -355,6 +355,7 @@ Private Type RfbClientSetEncodings
     JpegQualityLevel    As Long
     NeedDesktopSizes    As Long
     PrefEncoding        As Long
+    ClientFingerPrint   As UcsClientFingerPrintEnum
 End Type
 Private Const sizeof_RfbClientSetEncodings As Long = 4
 
@@ -537,6 +538,12 @@ Private Enum UcsSendChannelEnum
     ucsChaChat
     [_]
     ucsChaMax = [_] - 1
+End Enum
+
+Private Enum UcsClientFingerPrintEnum
+    ucsClnUnknown
+    ucsClnUltraVNC
+    ucsClnFreeVNC
 End Enum
 
 Private Const STR_APP_NAME          As String = "VbVncServer"
@@ -1214,8 +1221,12 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                     .JpegQualityLevel = 0
                     .NeedDesktopSizes = 0
                     .PrefEncoding = -1
+                    .ClientFingerPrint = 0
                     For lIdx = 0 To .NumberOfEncodings - 1
                         .EncodingType(lIdx) = pvNetworkLong(.EncodingType(lIdx))
+                        #If ImplUseDebugLog Then
+'                            DebugLog MODULE_NAME, FUNC_NAME, ".EncodingType(" & lIdx & ")=" & .EncodingType(lIdx) & " (&H" & Hex$(.EncodingType(lIdx)) & ")"
+                        #End If
                         pvHasSupport(.EncodingType(lIdx)) = True
                         Select Case .EncodingType(lIdx)
                         Case rfbEncPsCompressionLevel To rfbEncPsCompressionLevel + 9
@@ -1230,12 +1241,14 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                             #End If
                         Case rfbEncPsExtendedDesktopSize, rfbEncPsDesktopSize
                             .NeedDesktopSizes = 1
-                        Case rfbEncRaw, rfbEncZlib, rfbEncTight
+                        Case rfbEncRaw, rfbEncZlib, rfbEncTight, rfbEncJPEG
                             If .PrefEncoding < 0 Then
                                 .PrefEncoding = .EncodingType(lIdx)
                             End If
-                        Case rfbEncRRE, rfbEncCoRRE, rfbEncHextile, rfbEncZlibHextile, rfbEncUltra, rfbEncUltra2, rfbEncTRLE, rfbEncZRLE, _
-                                rfbEncHitachiZYWRLE, rfbEncJPEG, rfbEncJRLE, rfbEncJRLE2, rfbEncTightPNG, _
+                        Case rfbEncUltra, rfbEncUltra2
+                            .ClientFingerPrint = ucsClnUltraVNC
+                        Case rfbEncRRE, rfbEncCoRRE, rfbEncHextile, rfbEncZlibHextile, rfbEncTRLE, rfbEncZRLE, _
+                                rfbEncHitachiZYWRLE, rfbEncJRLE, rfbEncJRLE2, rfbEncTightPNG, _
                                 rfbEncPsPointerPosition, rfbEncPsLastRect, rfbEncPsExtendedClipboard
                             '--- do nothing
                         Case Else
@@ -1246,6 +1259,11 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                             #End If
                         End Select
                     Next
+                    If UBound(.EncodingType) >= 2 Then
+                        If .EncodingType(0) = rfbEncHextile And .EncodingType(1) = rfbEncCopyRect And .EncodingType(2) = rfbEncZRLE Then
+                            .ClientFingerPrint = ucsClnFreeVNC
+                        End If
+                    End If
                 End With
             End If
             .Pos = .Pos + sizeof_RfbClientSetEncodings + m_uClientEncodings.NumberOfEncodings * 4
@@ -1263,7 +1281,7 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
             .Pos = .Pos + sizeof_RfbClientFramebufferUpdateRequest
             If m_uClientFramebufferUpdate.Incremental = 0 Then
                 Call RedrawWindow(0, ByVal 0, 0, RDW_INVALIDATE Or RDW_ALLCHILDREN)
-                If Not m_oZipArchive Is Nothing Then
+                If Not m_oZipArchive Is Nothing And m_uClientEncodings.PrefEncoding = rfbEncTight Then
                     m_oZipArchive.DeflateEnd m_hDeflateCtx
                     Set m_oZipArchive = Nothing
                 End If
@@ -2785,7 +2803,7 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
             lPitch = (.DirtyRects(lSrcIndex).Right - .DirtyRects(lSrcIndex).Left) * 4
             lPtr = VarPtr(.DirtyBuffers(lSrcIndex).Data(0))
             uTile.Size = 0
-            If m_uClientEncodings.PrefEncoding = rfbEncTight And m_uClientEncodings.JpegQualityLevel > 0 And lBytesPerPixel > 1 Then
+            If (m_uClientEncodings.PrefEncoding = rfbEncTight Or m_uClientEncodings.PrefEncoding = rfbEncJPEG) And lBytesPerPixel > 1 Then
                 #If ImplHistograms Then
                     ReDim aHistogram(0 To 255) As Long
                     For lY = .Tiles(lIdx).Top To .Tiles(lIdx).Top + .Tiles(lIdx).Height - 1
@@ -2806,7 +2824,7 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                         End If
                     Next
                     cTemp = (lColor1 + lColor2) * 100 / (.Tiles(lIdx).Width * .Tiles(lIdx).Height)
-                    lQualityLevel = (m_uClientEncodings.JpegQualityLevel - 1) * 10
+                    lQualityLevel = IIf(m_uClientEncodings.JpegQualityLevel > 0, m_uClientEncodings.JpegQualityLevel - 1, 5) * 10
                     If cTemp > LEVEL_CUTOFF Then
                         lQualityLevel = lQualityLevel + (100 - lQualityLevel) * (cTemp - LEVEL_CUTOFF) / (100 - LEVEL_CUTOFF)
                     Else
@@ -2816,7 +2834,7 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                     For lY = .Tiles(lIdx).Top To .Tiles(lIdx).Top + .Tiles(lIdx).Height - 1
                         pvBufferWriteBlob uTile, lPtr + lY * lPitch + .Tiles(lIdx).Left * 4, .Tiles(lIdx).Width * 4
                     Next
-                    lQualityLevel = (m_uClientEncodings.JpegQualityLevel - 1) * 10
+                    lQualityLevel = IIf(m_uClientEncodings.JpegQualityLevel > 0, m_uClientEncodings.JpegQualityLevel - 1, 5) * 10
                 #End If
                 #If ImplUseDebugLog Then
                     sDebugInfo = sDebugInfo & " H=" & Format$(cTemp, "0.00") & " QL=" & lQualityLevel
@@ -2834,13 +2852,18 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                 lSize = cTemp * 10000
                 #If ImplUseDebugLog Then
                     cTemp = lSize * 100 / (.Tiles(lIdx).Width * .Tiles(lIdx).Height * 4)
-                    sDebugInfo = sDebugInfo & " JPG=" & Format$(cTemp, "0.00") & "%"
+                    sDebugInfo = sDebugInfo & IIf(m_uClientEncodings.PrefEncoding = rfbEncTight, " TJPG=", " JPG=") & Format$(cTemp, "0.00") & "%"
                 #End If
-                pvBufferWriteLong uOutput, rfbEncTight, Size:=4
-                '--- compression control: &H90 = no reset, JpegCompression
-                pvBufferWriteLong uOutput, &H90
-                pvBufferWriteCompactLong uOutput, lSize
-                pvBufferWriteStream uOutput, m_pImageStream
+                If m_uClientEncodings.PrefEncoding = rfbEncTight Then
+                    pvBufferWriteLong uOutput, rfbEncTight, Size:=4
+                    '--- compression control: &H90 = no reset, JpegCompression
+                    pvBufferWriteLong uOutput, &H90
+                    pvBufferWriteCompactLong uOutput, lSize
+                    pvBufferWriteStream uOutput, m_pImageStream
+                Else
+                    pvBufferWriteLong uOutput, rfbEncJPEG, Size:=4
+                    pvBufferWriteStream uOutput, m_pImageStream
+                End If
             Else
                 #If ImplZlib Then
                     If m_uClientEncodings.PrefEncoding = rfbEncTight And m_uClientEncodings.CompressionLevel > 0 And lBytesPerPixel = 4 Then
@@ -2882,7 +2905,7 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                     pvBufferWriteBlob uTile, 0, .Tiles(lIdx).Height * .Tiles(lIdx).Width * lBytesPerPixel
                 End Select
                 #If ImplZlib Then
-                    If m_uClientEncodings.PrefEncoding = rfbEncTight And m_uClientEncodings.CompressionLevel > 0 Then
+                    If m_uClientEncodings.PrefEncoding = rfbEncTight And m_uClientEncodings.ClientFingerPrint <> ucsClnFreeVNC Then
                         pvBufferWriteLong uOutput, rfbEncTight, Size:=4
                         '--- compression control: &H0 = no reset, use stream 0, no filter; &H1 = reset, use stream 0, no filter
                         pvBufferWriteLong uOutput, IIf(m_oZipArchive Is Nothing, &H1, &H0)
@@ -2893,12 +2916,17 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                             pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size, CompactSize:=True
                             #If ImplUseDebugLog Then
                                 cTemp = (uOutput.Size - lSize) * 100 / (.Tiles(lIdx).Width * .Tiles(lIdx).Height * 4)
-                                sDebugInfo = sDebugInfo & " ZLib=" & Format$(cTemp, "0.00") & "%"
+                                sDebugInfo = sDebugInfo & " TZLib=" & Format$(cTemp, "0.00") & "%"
                             #End If
                         End If
-                    ElseIf m_uClientEncodings.PrefEncoding = rfbEncTight Then
+                    ElseIf m_uClientEncodings.PrefEncoding = rfbEncZlib And m_uClientEncodings.ClientFingerPrint <> ucsClnFreeVNC Then
                         pvBufferWriteLong uOutput, rfbEncZlib, Size:=4
+                        lSize = uOutput.Size
                         pvBufferWriteZlibBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
+                        #If ImplUseDebugLog Then
+                            cTemp = (uOutput.Size - lSize) * 100 / (.Tiles(lIdx).Width * .Tiles(lIdx).Height * 4)
+                            sDebugInfo = sDebugInfo & " ZLib=" & Format$(cTemp, "0.00") & "%"
+                        #End If
                     Else
                         pvBufferWriteLong uOutput, rfbEncRaw, Size:=4
                         pvBufferWriteBlob uOutput, VarPtr(uTile.Data(0)), uTile.Size
@@ -3137,6 +3165,8 @@ Private Function pvGetEncodingBit(ByVal eEncoding As RfbEncodingEnum) As Long
         pvGetEncodingBit = 2 ^ 8
     Case rfbEncUltra
         pvGetEncodingBit = 2 ^ 9
+    Case rfbEncJPEG
+        pvGetEncodingBit = 2 ^ 10
     End Select
 End Function
 
