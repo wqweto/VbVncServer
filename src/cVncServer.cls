@@ -1289,10 +1289,12 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
             .Pos = .Pos + sizeof_RfbClientFramebufferUpdateRequest
             If m_uClientFramebufferUpdate.Incremental = 0 Then
                 Call RedrawWindow(0, ByVal 0, 0, RDW_INVALIDATE Or RDW_ALLCHILDREN)
-                If Not m_oZipArchive Is Nothing And m_uClientEncodings.PrefEncoding = rfbEncTight Then
-                    m_oZipArchive.DeflateEnd m_hDeflateCtx
-                    Set m_oZipArchive = Nothing
-                End If
+                #If ImplZlib Then
+                    If Not m_oZipArchive Is Nothing And m_uClientEncodings.PrefEncoding = rfbEncTight Then
+                        m_oZipArchive.DeflateEnd m_hDeflateCtx
+                        Set m_oZipArchive = Nothing
+                    End If
+                #End If
             End If
         Case rfbMsgKeyEvent
             If .Size - .Pos < sizeof_RfbClientKeyEvent Then
@@ -2006,13 +2008,17 @@ SkipChecksums:
         End If
     Case rfbFtpFilePacket
         If m_pFtpRecvStream Is Nothing Then
+AbortRecv:
+            Set m_pFtpRecvStream = Nothing
+            pvSendFileTransfer uOutput, rfbFtpAbortFileTransfer
             GoTo QH
         End If
-        If uMsg.Size = rfbFtpSPacketAlreadyThere Then
+        Select Case uMsg.Size
+        Case rfbFtpSPacketAlreadyThere
             If pvCheckHResult(IStream_Seek(m_pFtpRecvStream, uMsg.Length / 10000@, STREAM_SEEK_CUR), FUNC_NAME) < 0 Then
                 GoTo AbortRecv
             End If
-        ElseIf uMsg.Size = rfbFtpSPacketCompressed Then
+        Case rfbFtpSPacketCompressed
             #If ImplZlib Then
                 Dim hCtx            As Long
                 Dim lOutputPtr      As Long
@@ -2025,8 +2031,10 @@ SkipChecksums:
                     If lOutputSize = 0 Then
                         GoTo AbortRecv
                     End If
-                    ReDim baData(0 To lOutputSize - 1) As Byte
-                    Call CopyMemory(baData(0), ByVal lOutputPtr, lOutputSize)
+                    If pvCheckHResult(IStream_Write(m_pFtpRecvStream, lOutputPtr, lOutputSize), FUNC_NAME) < 0 Then
+                        Call CoTaskMemFree(lOutputPtr)
+                        GoTo AbortRecv
+                    End If
                     Call CoTaskMemFree(lOutputPtr)
                 End With
             #Else
@@ -2035,17 +2043,11 @@ SkipChecksums:
                 #End If
                 GoTo AbortRecv
             #End If
-            uMsg.Size = rfbFtpSPacketUncompressed
-        End If
-        If uMsg.Size = rfbFtpSPacketUncompressed Then
+        Case Else ' rfbFtpSPacketUncompressed
             If pvCheckHResult(IStream_Write(m_pFtpRecvStream, pvArrayPtr(baData), pvArraySize(baData)), FUNC_NAME) < 0 Then
-AbortRecv:
-                Set m_pFtpRecvStream = Nothing
-                If Not pvSendFileTransfer(uOutput, rfbFtpAbortFileTransfer) Then
-                    GoTo QH
-                End If
+                GoTo AbortRecv
             End If
-        End If
+        End Select
     Case rfbFtpEndOfFile
         If pvCheckHResult(IStream_Seek(m_pFtpRecvStream, 0, STREAM_SEEK_CUR, cStreamSize), FUNC_NAME) < 0 Then
             cStreamSize = -1
