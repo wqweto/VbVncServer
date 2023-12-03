@@ -188,6 +188,10 @@ Private Declare Function IPropertyBag2_Write_Proxy Lib "windowscodecs" (ByVal pP
     #End If
     Private Declare Function GetEnvironmentVariable Lib "kernel32" Alias "GetEnvironmentVariableW" (ByVal lpName As Long, ByVal lpBuffer As Long, ByVal nSize As Long) As Long
     Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnvironmentVariableW" (ByVal lpName As Long, ByVal lpValue As Long) As Long
+    Private Declare Function CreateFile Lib "kernel32" Alias "CreateFileW" (ByVal lpFileName As Long, ByVal dwDesiredAccess As Long, ByVal dwShareMode As Long, ByVal lpSecurityAttributes As Long, ByVal dwCreationDisposition As Long, ByVal dwFlagsAndAttributes As Long, ByVal hTemplateFile As Long) As Long
+    Private Declare Function SetFilePointerEx Lib "kernel32" (ByVal hFile As Long, ByVal liDistanceToMove As Currency, ByVal lpNewFilePointer As Long, ByVal dwMoveMethod As Long) As Long
+    Private Declare Function SetEndOfFile Lib "kernel32" (ByVal hFile As Long) As Long
+    Private Declare Function CloseHandle Lib "kernel32" (ByVal hObject As Long) As Long
 #End If
 Private Declare Function D3D11CreateDevice Lib "d3d11" (ByVal pAdapter As IUnknown, ByVal DriverType As D3D_DRIVER_TYPE, ByVal Software As Long, ByVal Flags As D3D11_CREATE_DEVICE_FLAG, pFeatureLevels As Any, ByVal FeatureLevels As Long, ByVal SDKVersion As Long, ppDevice As ID3D11Device, pFeatureLevel As D3D_FEATURE_LEVEL, ppImmediateContext As ID3D11DeviceContext) As VBHRESULT
 Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBD3D11.VBGUID, ppFactory As IDXGIFactory1) As VBHRESULT
@@ -476,7 +480,7 @@ Private Enum RfbFileTransferProtocolEnum
     rfbFtpADirRecursiveListItem = 10
     rfbFtpADirRecursiveSize = 11
     
-    ' Content params -- rfbFtpCommand Command
+    ' Content params -- rfbFtpCommand
     rfbFtpCDirCreate = 1                        ' Request the server to create the given directory
     rfbFtpCDirDelete = 2                        ' Request the server to delete the given directory
     rfbFtpCFileCreate = 3                       ' Request the server to create the given file
@@ -484,12 +488,16 @@ Private Enum RfbFileTransferProtocolEnum
     rfbFtpCFileRename = 5                       ' Request the server to rename the given file
     rfbFtpCDirRename = 6                        ' Request the server to rename the given directory
     
-    ' Errors -- content params or "size" field
+    ' Size param - Errors
     rfbFtpSErrorUnknownCmd = 1                  ' Unknown FileTransfer command.
     rfbFtpSErrorCmd = -1                        ' Error when a command fails on remote side (ret in "size" field)
-    rfbFtpSProtocolEnabled = 1                  ' for rfbFtpAbortFileTransfer
+    
+    ' Size param - rfbFtpAbortFileTransfer
+    rfbFtpSProtocolEnabled = 1
     rfbFtpSProtocolDisabled = -1
-    rfbFtpSPacketUncompressed = 0               ' for rfbFtpFilePacket
+    
+    ' Size param - rfbFtpFilePacket
+    rfbFtpSPacketUncompressed = 0
     rfbFtpSPacketCompressed = 1
     rfbFtpSPacketAlreadyThere = 2
 End Enum
@@ -1731,7 +1739,7 @@ Private Function pvSendFileTransferFileContent(uOutput As UcsBuffer, pStream As 
     On Error GoTo EH
     ReDim baBuffer(0 To rfbFtpProtocolPacketSize - 1) As Byte
     Do While Not m_oSocket.HasPendingEvent
-        If pvCheckHResult(IStream_Read(pStream, pvArrayPtr(baBuffer), pvArraySize(baBuffer), lRead)) < 0 Then
+        If pvCheckHResult(IStream_Read(pStream, pvArrayPtr(baBuffer), pvArraySize(baBuffer), lRead), FUNC_NAME) < 0 Then
             If Not pvSendFileTransfer(uOutput, rfbFtpAbortFileTransfer) Then
                 GoTo QH
             End If
@@ -1749,7 +1757,7 @@ Cleanup:
         End If
         If pChecksums Is Nothing Then
             lChecksum = 0
-        ElseIf IStream_Read(pChecksums, VarPtr(lChecksum), 4) < 0 Then
+        ElseIf IStream_Read(pChecksums, VarPtr(lChecksum), 4) < 0 Then '-- don't check hResult
             lChecksum = 0
             Set pChecksums = Nothing
         ElseIf lChecksum <> pvCalcAdler32(1, baBuffer, 0, lRead) Then
@@ -1797,6 +1805,8 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
     Dim sFile           As String
     Dim lBufferSize     As Long
     Dim bDelaySend      As Boolean
+    Dim aChecksum()     As Long
+    Dim pStream         As stdole.IUnknown
     
     On Error GoTo EH
     If uMsg.ContentType <> rfbFtpFilePacket And uMsg.ContentType <> rfbFtpFileChecksums Then
@@ -1934,9 +1944,9 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
         #End If
         If SHCreateStreamOnFile(StrPtr(sPath), STGM_READ, m_pFtpSendStream) < 0 Then
             cStreamSize = ERROR_VALUE
-        ElseIf pvCheckHResult(IStream_Seek(m_pFtpSendStream, 0, STREAM_SEEK_END, cStreamSize)) < 0 Then
+        ElseIf pvCheckHResult(IStream_Seek(m_pFtpSendStream, 0, STREAM_SEEK_END, cStreamSize), FUNC_NAME) < 0 Then
             cStreamSize = ERROR_VALUE
-        ElseIf pvCheckHResult(IStream_Seek(m_pFtpSendStream, 0, STREAM_SEEK_SET)) < 0 Then
+        ElseIf pvCheckHResult(IStream_Seek(m_pFtpSendStream, 0, STREAM_SEEK_SET), FUNC_NAME) < 0 Then
             cStreamSize = ERROR_VALUE
         Else
             sPath = sPath & "," & Format$(pvGetFileDateTime(sPath), FORMAT_FILEDATETIME)
@@ -1960,7 +1970,33 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
         End If
     Case rfbFtpFileTransferOffer
         m_sFtpRecvFileName = Split(sPath, ",", Limit:=2)(0)
-        If pvCheckHResult(pvCreateStreamOnFile(m_sFtpRecvFileName, STGM_WRITE Or STGM_CREATE, m_pFtpRecvStream)) < 0 Then
+        If pvCreateStreamOnFile(m_sFtpRecvFileName, STGM_READ, pStream) < 0 Then '--- don't check hResult
+            GoTo SkipChecksums
+        End If
+        If pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_END, cStreamSize), FUNC_NAME) < 0 Then
+            GoTo SkipChecksums
+        End If
+        cStreamSize = cStreamSize * 10000@
+        If pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_SET), FUNC_NAME) < 0 Then
+            GoTo SkipChecksums
+        End If
+        ReDim baBuffer(0 To rfbFtpProtocolPacketSize - 1) As Byte
+        ReDim aChecksum(0 To Int((cStreamSize + rfbFtpProtocolPacketSize - 1) / rfbFtpProtocolPacketSize)) As Long
+        For lIdx = 0 To UBound(aChecksum)
+            If IStream_Read(pStream, pvArrayPtr(baBuffer), pvArraySize(baBuffer), lSize) < 0 Or lSize = 0 Then '--- don't check hResult
+                Exit For
+            End If
+            aChecksum(lIdx) = pvCalcAdler32(1, baBuffer, 0, lSize)
+        Next
+        If lIdx > 0 Then
+            If Not pvSendFileTransfer(uOutput, rfbFtpFileChecksums, Ptr:=VarPtr(aChecksum(0)), Size:=lIdx * 4) Then
+                GoTo QH
+            End If
+        End If
+SkipChecksums:
+        lIdx = IIf(pStream Is Nothing, STGM_CREATE, 0)
+        Set pStream = Nothing
+        If pvCheckHResult(pvCreateStreamOnFile(m_sFtpRecvFileName, STGM_WRITE Or lIdx, m_pFtpRecvStream), FUNC_NAME) < 0 Then
             eStatus = rfbFtpSErrorCmd
         End If
         baBuffer = StrConv(m_sFtpRecvFileName, vbFromUnicode, GetSystemDefaultLCID())
@@ -1969,13 +2005,55 @@ Private Function pvHandleFileTransfer(uOutput As UcsBuffer, uMsg As RfbFileTrans
             GoTo QH
         End If
     Case rfbFtpFilePacket
-        If IStream_Write(m_pFtpRecvStream, pvArrayPtr(baData), pvArraySize(baData)) < 0 Then
-            If Not pvSendFileTransfer(uOutput, rfbFtpAbortFileTransfer) Then
-                GoTo QH
+        If m_pFtpRecvStream Is Nothing Then
+            GoTo QH
+        End If
+        If uMsg.Size = rfbFtpSPacketAlreadyThere Then
+            If pvCheckHResult(IStream_Seek(m_pFtpRecvStream, uMsg.Length / 10000@, STREAM_SEEK_CUR), FUNC_NAME) < 0 Then
+                GoTo AbortRecv
+            End If
+        ElseIf uMsg.Size = rfbFtpSPacketCompressed Then
+            #If ImplZlib Then
+                Dim hCtx            As Long
+                Dim lOutputPtr      As Long
+                Dim lOutputSize     As Long
+                With New cZipArchive
+                    hCtx = .InflateInit()
+                    '--- skip prefix (2 bytes zlib header) and suffix (4 bytes adler32 checksum)
+                    .InflateBlob hCtx, VarPtr(baData(2)), pvArraySize(baData) - 2 - 4, lOutputPtr, lOutputSize
+                    .InflateEnd hCtx
+                    If lOutputSize = 0 Then
+                        GoTo AbortRecv
+                    End If
+                    ReDim baData(0 To lOutputSize - 1) As Byte
+                    Call CopyMemory(baData(0), ByVal lOutputPtr, lOutputSize)
+                    Call CoTaskMemFree(lOutputPtr)
+                End With
+            #Else
+                #If ImplUseDebugLog Then
+                    DebugLog MODULE_NAME, FUNC_NAME, "Compression not compiled (VNC_NO_ZLIB = 1)", vbLogEventTypeError
+                #End If
+                GoTo AbortRecv
+            #End If
+            uMsg.Size = rfbFtpSPacketUncompressed
+        End If
+        If uMsg.Size = rfbFtpSPacketUncompressed Then
+            If pvCheckHResult(IStream_Write(m_pFtpRecvStream, pvArrayPtr(baData), pvArraySize(baData)), FUNC_NAME) < 0 Then
+AbortRecv:
+                Set m_pFtpRecvStream = Nothing
+                If Not pvSendFileTransfer(uOutput, rfbFtpAbortFileTransfer) Then
+                    GoTo QH
+                End If
             End If
         End If
     Case rfbFtpEndOfFile
+        If pvCheckHResult(IStream_Seek(m_pFtpRecvStream, 0, STREAM_SEEK_CUR, cStreamSize), FUNC_NAME) < 0 Then
+            cStreamSize = -1
+        End If
         Set m_pFtpRecvStream = Nothing
+        If cStreamSize >= 0 Then
+            SetFileLen m_sFtpRecvFileName, cStreamSize * 10000@
+        End If
         #If ImplZlib Then
             If Right$(m_sFtpRecvFileName, sizeof_ZIP_SUFFIX) = STR_ZIP_SUFFIX Then
                 sPath = Mid$(m_sFtpRecvFileName, InStrRev(m_sFtpRecvFileName, "\") + 1)
@@ -2082,15 +2160,15 @@ Private Function pvHandleTightFileTransfer(uOutput As UcsBuffer, uMsg As UcsTigh
         pvBufferWriteBlob uOutput, pvArrayPtr(uList.Data), uList.Size
     Case rfbMsgTightUploadStartRequest
         sFile = Mid$(uMsg.Path, 2)
-        If pvCheckHResult(pvCreateStreamOnFile(sFile, STGM_WRITE Or IIf((uMsg.Flags And 1) <> 0, STGM_CREATE, 0), m_pFtpRecvStream)) < 0 Then
+        If pvCheckHResult(pvCreateStreamOnFile(sFile, STGM_WRITE Or IIf((uMsg.Flags And 1) <> 0, STGM_CREATE, 0), m_pFtpRecvStream), FUNC_NAME) < 0 Then
             GoTo Failed
         End If
-        If pvCheckHResult(IStream_Seek(m_pFtpRecvStream, uMsg.Offset, STREAM_SEEK_SET)) < 0 Then
+        If pvCheckHResult(IStream_Seek(m_pFtpRecvStream, uMsg.Offset, STREAM_SEEK_SET), FUNC_NAME) < 0 Then
             GoTo Failed
         End If
         pvBufferWriteLong uOutput, rfbMsgTightUploadStartReply, Size:=4
     Case rfbMsgTightUploadDataRequest
-        If pvCheckHResult(IStream_Write(m_pFtpRecvStream, pvArrayPtr(baData), pvArraySize(baData))) < 0 Then
+        If pvCheckHResult(IStream_Write(m_pFtpRecvStream, pvArrayPtr(baData), pvArraySize(baData)), FUNC_NAME) < 0 Then
             GoTo Failed
         End If
         pvBufferWriteLong uOutput, rfbMsgTightUploadDataReply, Size:=4
@@ -2099,16 +2177,16 @@ Private Function pvHandleTightFileTransfer(uOutput As UcsBuffer, uMsg As UcsTigh
         pvBufferWriteLong uOutput, rfbMsgTightUploadEndReply, Size:=4
     Case rfbMsgTightDownloadStartRequest
         m_sFtpRecvFileName = Mid(uMsg.Path, 2)
-        If pvCheckHResult(pvCreateStreamOnFile(m_sFtpRecvFileName, STGM_READ, m_pFtpSendStream)) < 0 Then
+        If pvCheckHResult(pvCreateStreamOnFile(m_sFtpRecvFileName, STGM_READ, m_pFtpSendStream), FUNC_NAME) < 0 Then
             GoTo Failed
         End If
-        If pvCheckHResult(IStream_Seek(m_pFtpSendStream, uMsg.Offset, STREAM_SEEK_SET)) < 0 Then
+        If pvCheckHResult(IStream_Seek(m_pFtpSendStream, uMsg.Offset, STREAM_SEEK_SET), FUNC_NAME) < 0 Then
             GoTo Failed
         End If
         pvBufferWriteLong uOutput, rfbMsgTightDownloadStartReply, Size:=4
     Case rfbMsgTightDownloadDataRequest
         pvArrayAllocate baBuffer, Clamp(uMsg.DataSize, , 2 ^ 20), FUNC_NAME & ".baBuffer"
-        If pvCheckHResult(IStream_Read(m_pFtpSendStream, pvArrayPtr(baBuffer), pvArraySize(baBuffer), lSize)) < 0 Then
+        If pvCheckHResult(IStream_Read(m_pFtpSendStream, pvArrayPtr(baBuffer), pvArraySize(baBuffer), lSize), FUNC_NAME) < 0 Then
             GoTo Failed
         End If
         If lSize = 0 Then
@@ -2839,14 +2917,14 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                 #If ImplUseDebugLog Then
                     sDebugInfo = sDebugInfo & " H=" & Format$(cTemp, "0.00") & " QL=" & lQualityLevel
                 #End If
-                If pvCheckHResult(IStream_Seek(m_pImageStream, 0, STREAM_SEEK_SET)) < 0 Then
+                If pvCheckHResult(IStream_Seek(m_pImageStream, 0, STREAM_SEEK_SET), FUNC_NAME) < 0 Then
                     GoTo QH
                 End If
                 If Not pvWicConvertImage(m_pImageStream, m_aWicFormatJpeg, Clamp(lQualityLevel, 1, 100), _
                         uTile.Data, .Tiles(lIdx).Width, .Tiles(lIdx).Height, m_aWicFormat32bppBGR) Then
                     GoTo QH
                 End If
-                If pvCheckHResult(IStream_Seek(m_pImageStream, 0, STREAM_SEEK_CUR, cTemp)) < 0 Then
+                If pvCheckHResult(IStream_Seek(m_pImageStream, 0, STREAM_SEEK_CUR, cTemp), FUNC_NAME) < 0 Then
                     GoTo QH
                 End If
                 lSize = cTemp * 10000
@@ -3081,43 +3159,43 @@ Private Function pvWicConvertImage( _
     Dim aBag(0 To 7)    As Long
     
     On Error GoTo EH
-    If pvCheckHResult(IWICImagingFactory_CreateBitmapFromMemory_Proxy(m_pWicFactory, lWidth, lHeight, aPixelFormat(0), lWidth * 4, UBound(baInput) + 1, baInput(0), pBitmap)) < 0 Then
+    If pvCheckHResult(IWICImagingFactory_CreateBitmapFromMemory_Proxy(m_pWicFactory, lWidth, lHeight, aPixelFormat(0), lWidth * 4, UBound(baInput) + 1, baInput(0), pBitmap), FUNC_NAME) < 0 Then
         GoTo QH
     End If
-    If pvCheckHResult(IWICImagingFactory_CreateStream_Proxy(m_pWicFactory, pWicStream)) < 0 Then
+    If pvCheckHResult(IWICImagingFactory_CreateStream_Proxy(m_pWicFactory, pWicStream), FUNC_NAME) < 0 Then
         GoTo QH
     End If
-    If pvCheckHResult(IWICStream_InitializeFromIStream_Proxy(pWicStream, pOutput)) < 0 Then
+    If pvCheckHResult(IWICStream_InitializeFromIStream_Proxy(pWicStream, pOutput), FUNC_NAME) < 0 Then
         GoTo QH
     End If
-    If pvCheckHResult(IWICImagingFactory_CreateEncoder_Proxy(m_pWicFactory, aContainerFormat(0), ByVal 0, pEncoder)) < 0 Then
+    If pvCheckHResult(IWICImagingFactory_CreateEncoder_Proxy(m_pWicFactory, aContainerFormat(0), ByVal 0, pEncoder), FUNC_NAME) < 0 Then
         GoTo QH
     End If
-    If pvCheckHResult(IWICBitmapEncoder_Initialize_Proxy(pEncoder, pWicStream, WICBitmapEncoderNoCache)) < 0 Then
+    If pvCheckHResult(IWICBitmapEncoder_Initialize_Proxy(pEncoder, pWicStream, WICBitmapEncoderNoCache), FUNC_NAME) < 0 Then
         GoTo QH
     End If
-    If pvCheckHResult(IWICBitmapEncoder_CreateNewFrame_Proxy(pEncoder, pFrame, pPropBag)) < 0 Then
+    If pvCheckHResult(IWICBitmapEncoder_CreateNewFrame_Proxy(pEncoder, pFrame, pPropBag), FUNC_NAME) < 0 Then
         GoTo QH
     End If
     If lImageQuality <> 0 Then
         aBag(3) = StrPtr("ImageQuality")
-        If pvCheckHResult(IPropertyBag2_Write_Proxy(pPropBag, 1, aBag(0), CSng(lImageQuality) / 100!)) < 0 Then
+        If pvCheckHResult(IPropertyBag2_Write_Proxy(pPropBag, 1, aBag(0), CSng(lImageQuality) / 100!), FUNC_NAME) < 0 Then
             GoTo QH
         End If
     End If
-    If pvCheckHResult(IWICBitmapFrameEncode_Initialize_Proxy(pFrame, pPropBag)) < 0 Then
+    If pvCheckHResult(IWICBitmapFrameEncode_Initialize_Proxy(pFrame, pPropBag), FUNC_NAME) < 0 Then
         GoTo QH
     End If
-    If pvCheckHResult(IWICBitmapFrameEncode_SetSize_Proxy(pFrame, lWidth, lHeight)) < 0 Then
+    If pvCheckHResult(IWICBitmapFrameEncode_SetSize_Proxy(pFrame, lWidth, lHeight), FUNC_NAME) < 0 Then
         GoTo QH
     End If
-    If pvCheckHResult(IWICBitmapFrameEncode_WriteSource_Proxy(pFrame, pBitmap, ByVal 0)) < 0 Then
+    If pvCheckHResult(IWICBitmapFrameEncode_WriteSource_Proxy(pFrame, pBitmap, ByVal 0), FUNC_NAME) < 0 Then
         GoTo QH
     End If
-    If pvCheckHResult(IWICBitmapFrameEncode_Commit_Proxy(pFrame)) < 0 Then
+    If pvCheckHResult(IWICBitmapFrameEncode_Commit_Proxy(pFrame), FUNC_NAME) < 0 Then
         GoTo QH
     End If
-    If pvCheckHResult(IWICBitmapEncoder_Commit_Proxy(pEncoder)) < 0 Then
+    If pvCheckHResult(IWICBitmapEncoder_Commit_Proxy(pEncoder), FUNC_NAME) < 0 Then
         GoTo QH
     End If
     '--- success
@@ -3128,18 +3206,16 @@ EH:
     PrintError FUNC_NAME
 End Function
 
-Private Function pvCheckHResult(ByVal hResult As Long, Optional vErrSource As Variant) As Long
-    Const FUNC_NAME     As String = "pvCheckHResult"
-    
+Private Function pvCheckHResult(ByVal hResult As Long, sFunction As String) As Long
     On Error GoTo EH
     If hResult < 0 Then
-        Err.Raise hResult, vErrSource
+        Err.Raise hResult
     End If
 QH:
     pvCheckHResult = hResult
     Exit Function
 EH:
-    PrintError IIf(IsMissing(vErrSource), FUNC_NAME, vErrSource)
+    PrintError sFunction
     Resume QH
 End Function
 
@@ -3334,19 +3410,20 @@ Private Sub pvBufferWriteCurrency(uOutput As UcsBuffer, cValue As Currency)
 End Sub
 
 Private Sub pvBufferWriteStream(uOutput As UcsBuffer, pStream As stdole.IUnknown)
+    Const FUNC_NAME     As String = "pvBufferWriteStream"
     Dim cTemp           As Currency
     Dim lSize           As Long
     
-    If pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_CUR, cTemp)) < 0 Then
+    If pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_CUR, cTemp), FUNC_NAME) < 0 Then
         GoTo QH
     End If
     lSize = cTemp * 10000
     If lSize > 0 Then
         pvBufferWriteBlob uOutput, 0, lSize
-        If pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_SET)) < 0 Then
+        If pvCheckHResult(IStream_Seek(pStream, 0, STREAM_SEEK_SET), FUNC_NAME) < 0 Then
             GoTo QH
         End If
-        If pvCheckHResult(IStream_Read(pStream, VarPtr(uOutput.Data(uOutput.Size - lSize)), lSize)) < 0 Then
+        If pvCheckHResult(IStream_Read(pStream, VarPtr(uOutput.Data(uOutput.Size - lSize)), lSize), FUNC_NAME) < 0 Then
             GoTo QH
         End If
     End If
@@ -3702,6 +3779,25 @@ End Property
 
 Private Function Zn(sText As String, Optional IfEmptyString As Variant = Null, Optional EmptyString As String) As Variant
     Zn = IIf(sText = EmptyString, IfEmptyString, sText)
+End Function
+
+Private Function SetFileLen(sFile As String, ByVal cFileSize As Currency, Optional ByVal Exclusive As Boolean) As Boolean
+    Const GENERIC_WRITE                 As Long = &H40000000
+    Const OPEN_EXISTING                 As Long = 3
+    Const FILE_SHARE_READ               As Long = &H1
+    Const FILE_BEGIN                    As Long = 0
+    Dim hFile           As Long
+    
+    hFile = CreateFile(StrPtr(sFile), GENERIC_WRITE, IIf(Exclusive, 0, FILE_SHARE_READ), 0, OPEN_EXISTING, 0, 0)
+    If hFile <> 0 Then
+        If SetFilePointerEx(hFile, cFileSize / 10000@, 0, FILE_BEGIN) <> 0 Then
+            If SetEndOfFile(hFile) <> 0 Then
+                '--- success
+                SetFileLen = True
+            End If
+        End If
+        Call CloseHandle(hFile)
+    End If
 End Function
 #End If
 
