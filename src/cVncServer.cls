@@ -1383,6 +1383,8 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
                 lIdx = lIdx + 4
             ElseIf uFileTransfer.ContentType = rfbFtpFilePacket And uFileTransfer.Size = rfbFtpSPacketAlreadyThere Then
                 lIdx = 0
+            ElseIf uFileTransfer.ContentType = rfbFtpEndOfFile Then
+                lIdx = 0
             End If
             If .Size - .Pos < sizeof_RfbFileTransfer + lIdx Then
                 GoTo QH
@@ -2083,6 +2085,13 @@ AbortRecv:
                 ContentParam:=rfbFtpProtocolVersion, ContentSize:=rfbFtpSProtocolEnabled) Then
             GoTo QH
         End If
+    Case rfbFtpFileTransferSessionStart, rfbFtpFileTransferSessionEnd
+        m_bFtpSendRunning = False
+        Set m_pFtpSendStream = Nothing
+        Set m_pFtpSendChecksums = Nothing
+        m_sFtpSendArchiveFile = vbNullString
+        m_sFtpRecvFileName = vbNullString
+        Set m_pFtpRecvStream = Nothing
     End Select
     '--- success
     pvHandleFileTransfer = True
