@@ -2310,19 +2310,19 @@ Attribute TimerProc.VB_MemberFlags = "40"
     For Each oConn In m_cConnections
         oConn.frNotifyBeforeSendFrame
     Next
-    m_uCaptureFrame.NumTiles = 0
-    m_uCaptureFrame.NumMoveRects = 0
-    m_uCaptureFrame.PointerShapeBufferSize = 0
+    If m_uCaptureCtx.Duplication Is Nothing Then
+        frCaptureSetupDeviceIndex
+    End If
     If Not m_uCaptureCtx.Duplication Is Nothing Then
-        If Not pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
-            If m_uCaptureCtx.Duplication Is Nothing Then
-                frCaptureSetupDeviceIndex
-            End If
+        m_uCaptureFrame.NumTiles = 0
+        m_uCaptureFrame.NumMoveRects = 0
+        m_uCaptureFrame.PointerShapeBufferSize = 0
+        If pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
+            For Each oConn In m_cConnections
+                oConn.frNotifySendFrame m_uCaptureFrame
+            Next
         End If
     End If
-    For Each oConn In m_cConnections
-        oConn.frNotifySendFrame m_uCaptureFrame
-    Next
     For Each oConn In m_cConnections
         oConn.frNotifyAfterSendFrame
     Next
