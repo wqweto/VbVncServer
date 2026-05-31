@@ -13,7 +13,7 @@ Attribute VB_PredeclaredId = False
 Attribute VB_Exposed = False
 '=========================================================================
 '
-' VbVncServer Project (c) 2021-2023 by wqweto@gmail.com
+' VbVncServer Project (c) 2021-2026 by wqweto@gmail.com
 '
 ' Simple VNC Server using DXGI Desktop Duplication
 '
@@ -27,6 +27,7 @@ Private Const MODULE_NAME As String = "cVncServer"
 
 #Const ImplFileTransfer = (VNC_NO_FILE_TRANSFER = 0)
 #Const ImplTextChat = (VNC_NO_TEXT_CHAT = 0)
+#Const ImplConsole = (VNC_NO_CONSOLE = 0)
 #Const ImplZlib = (VNC_NO_ZLIB = 0)
 #Const ImplHistograms = (VNC_HISTOGRAMS = 1)
 #Const ImplNoIdeProtection = (MST_NO_IDE_PROTECTION <> 0)
@@ -128,6 +129,8 @@ Private Declare Function GetFileAttributes Lib "kernel32" Alias "GetFileAttribut
 Private Declare Function WideCharToMultiByte Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpDefaultChar As Long, ByVal lpUsedDefaultChar As Long) As Long
 Private Declare Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As Long, ByVal dwFlags As Long, lpMultiByteStr As Any, ByVal cchMultiByte As Long, ByVal lpWideCharStr As Long, ByVal cchWideChar As Long) As Long
 Private Declare Function GetSystemDefaultLCID Lib "kernel32" () As Long
+Private Declare Function CreateFile Lib "kernel32" Alias "CreateFileW" (ByVal lpFileName As Long, ByVal dwDesiredAccess As Long, ByVal dwShareMode As Long, ByVal lpSecurityAttributes As Long, ByVal dwCreationDisposition As Long, ByVal dwFlagsAndAttributes As Long, ByVal hTemplateFile As Long) As Long
+Private Declare Function CloseHandle Lib "kernel32" (ByVal hObject As Long) As Long
 '--- user32/gdi32
 Private Declare Sub mouse_event Lib "user32" (ByVal dwFlags As Long, ByVal dx As Long, ByVal dy As Long, ByVal cButtons As Long, ByVal dwExtraInfo As Long)
 Private Declare Function SendInput Lib "user32" (ByVal nInputs As Long, pInputs As Any, ByVal cbSize As Long) As Long
@@ -188,13 +191,42 @@ Private Declare Function IPropertyBag2_Write_Proxy Lib "windowscodecs" (ByVal pP
     #End If
     Private Declare Function GetEnvironmentVariable Lib "kernel32" Alias "GetEnvironmentVariableW" (ByVal lpName As Long, ByVal lpBuffer As Long, ByVal nSize As Long) As Long
     Private Declare Function SetEnvironmentVariable Lib "kernel32" Alias "SetEnvironmentVariableW" (ByVal lpName As Long, ByVal lpValue As Long) As Long
-    Private Declare Function CreateFile Lib "kernel32" Alias "CreateFileW" (ByVal lpFileName As Long, ByVal dwDesiredAccess As Long, ByVal dwShareMode As Long, ByVal lpSecurityAttributes As Long, ByVal dwCreationDisposition As Long, ByVal dwFlagsAndAttributes As Long, ByVal hTemplateFile As Long) As Long
     Private Declare Function SetFilePointerEx Lib "kernel32" (ByVal hFile As Long, ByVal liDistanceToMove As Currency, ByVal lpNewFilePointer As Long, ByVal dwMoveMethod As Long) As Long
     Private Declare Function SetEndOfFile Lib "kernel32" (ByVal hFile As Long) As Long
-    Private Declare Function CloseHandle Lib "kernel32" (ByVal hObject As Long) As Long
 #End If
 Private Declare Function D3D11CreateDevice Lib "d3d11" (ByVal pAdapter As IUnknown, ByVal DriverType As D3D_DRIVER_TYPE, ByVal Software As Long, ByVal Flags As D3D11_CREATE_DEVICE_FLAG, pFeatureLevels As Any, ByVal FeatureLevels As Long, ByVal SDKVersion As Long, ppDevice As ID3D11Device, pFeatureLevel As D3D_FEATURE_LEVEL, ppImmediateContext As ID3D11DeviceContext) As VBHRESULT
 Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBD3D11.VBGUID, ppFactory As IDXGIFactory1) As VBHRESULT
+#If ImplConsole Then
+    Private Declare Function AllocConsole Lib "kernel32" () As Long
+    Private Declare Function GetConsoleWindow Lib "kernel32" () As Long
+    Private Declare Function SetConsoleCtrlHandler Lib "kernel32" (ByVal HandlerRoutine As Long, ByVal Add As Long) As Long
+    Private Declare Function GetConsoleScreenBufferInfo Lib "kernel32" (ByVal hConsoleOutput As Long, lpInfo As CONSOLE_SCREEN_BUFFER_INFO) As Long
+    Private Declare Function SetConsoleScreenBufferSize Lib "kernel32" (ByVal hConsoleOutput As Long, ByVal dwSize As Long) As Long
+    Private Declare Function SetConsoleWindowInfo Lib "kernel32" (ByVal hConsoleOutput As Long, ByVal bAbsolute As Long, lpConsoleWindow As SMALL_RECT) As Long
+    Private Declare Function ReadConsoleOutput Lib "kernel32" Alias "ReadConsoleOutputW" (ByVal hConsoleOutput As Long, lpBuffer As Any, ByVal dwBufferSize As Long, ByVal dwBufferCoord As Long, lpReadRegion As SMALL_RECT) As Long
+    Private Declare Function WriteConsoleInput Lib "kernel32" Alias "WriteConsoleInputW" (ByVal hConsoleInput As Long, lpBuffer As INPUT_RECORD, ByVal nLength As Long, lpNumberOfEventsWritten As Long) As Long
+    Private Declare Function CreateProcess Lib "kernel32" Alias "CreateProcessA" (ByVal lpApplicationName As String, ByVal lpCommandLine As String, ByVal lpProcessAttributes As Long, ByVal lpThreadAttributes As Long, ByVal bInheritHandles As Long, ByVal dwCreationFlags As Long, ByVal lpEnvironment As Long, ByVal lpCurrentDirectory As String, lpStartupInfo As STARTUPINFO, lpProcessInformation As PROCESS_INFORMATION) As Long
+    Private Declare Function TerminateProcess Lib "kernel32" (ByVal hProcess As Long, ByVal uExitCode As Long) As Long
+    Private Declare Function CreateJobObject Lib "kernel32" Alias "CreateJobObjectW" (ByVal lpJobAttributes As Long, ByVal lpName As Long) As Long
+    Private Declare Function SetInformationJobObject Lib "kernel32" (ByVal hJob As Long, ByVal JobObjectInformationClass As Long, lpJobObjectInformation As Any, ByVal cbJobObjectInformationLength As Long) As Long
+    Private Declare Function AssignProcessToJobObject Lib "kernel32" (ByVal hJob As Long, ByVal hProcess As Long) As Long
+    Private Declare Function CreateCompatibleDC Lib "gdi32" (ByVal hDC As Long) As Long
+    Private Declare Function SelectObject Lib "gdi32" (ByVal hDC As Long, ByVal hObject As Long) As Long
+    Private Declare Function DeleteObject Lib "gdi32" (ByVal hObject As Long) As Long
+    Private Declare Function SetTextColor Lib "gdi32" (ByVal hDC As Long, ByVal crColor As Long) As Long
+    Private Declare Function SetBkColor Lib "gdi32" (ByVal hDC As Long, ByVal crColor As Long) As Long
+    Private Declare Function SetBkMode Lib "gdi32" (ByVal hDC As Long, ByVal nBkMode As Long) As Long
+    Private Declare Function TextOutW Lib "gdi32" (ByVal hDC As Long, ByVal X As Long, ByVal Y As Long, ByVal lpString As Long, ByVal nCount As Long) As Long
+    Private Declare Function GetTextMetrics Lib "gdi32" Alias "GetTextMetricsA" (ByVal hDC As Long, lpMetrics As TEXTMETRIC) As Long
+    Private Declare Function CreateSolidBrush Lib "gdi32" (ByVal crColor As Long) As Long
+    Private Declare Function CreateDIBSection Lib "gdi32" (ByVal hDC As Long, lpBitsInfo As Any, ByVal wUsage As Long, lpBits As Long, ByVal Handle As Long, ByVal dw As Long) As Long
+    Private Declare Function ShowWindow Lib "user32" (ByVal hWnd As Long, ByVal nCmdShow As Long) As Long
+    Private Declare Function FillRect Lib "user32" (ByVal hDC As Long, lpRect As RECT, ByVal hBrush As Long) As Long
+    Private Declare Function MapVirtualKey Lib "user32" Alias "MapVirtualKeyA" (ByVal uCode As Long, ByVal uMapType As Long) As Long
+    Private Declare Function GetKeyboardState Lib "user32" (pbKeyState As Byte) As Long
+    Private Declare Function ToUnicode Lib "user32" (ByVal wVirtKey As Long, ByVal wScanCode As Long, lpKeyState As Byte, ByVal pwszBuff As Long, ByVal cchBuff As Long, ByVal wFlags As Long) As Long
+    Private Declare Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As Long, ByVal dwMilliseconds As Long) As Long
+#End If
 
 Private Type BLOBHEADER
     bType               As Byte
@@ -228,6 +260,144 @@ Private Type KEYBOARD_INPUT
    dwTime               As Long
    dwExtraInfo          As Long
    dwPadding            As Currency
+End Type
+
+Private Type COORD
+    X                   As Integer
+    Y                   As Integer
+End Type
+
+Private Type SMALL_RECT
+    Left                As Integer
+    Top                 As Integer
+    Right               As Integer
+    Bottom              As Integer
+End Type
+
+Private Type RECT
+    Left                As Long
+    Top                 As Long
+    Right               As Long
+    Bottom              As Long
+End Type
+
+Private Type CONSOLE_SCREEN_BUFFER_INFO
+    dwSize              As COORD
+    dwCursorPosition    As COORD
+    wAttributes         As Integer
+    srWindow            As SMALL_RECT
+    dwMaximumWindowSize As COORD
+End Type
+
+Private Type CHAR_INFO
+    UnicodeChar         As Integer
+    Attributes          As Integer
+End Type
+
+Private Type KEY_EVENT_RECORD
+    bKeyDown            As Long
+    wRepeatCount        As Integer
+    wVirtualKeyCode     As Integer
+    wVirtualScanCode    As Integer
+    UnicodeChar         As Integer
+    dwControlKeyState   As Long
+End Type
+
+Private Type INPUT_RECORD
+    EventType           As Integer
+    Padding             As Integer
+    KeyEvent            As KEY_EVENT_RECORD
+End Type
+
+Private Type STARTUPINFO
+    cb                  As Long
+    lpReserved          As Long
+    lpDesktop           As Long
+    lpTitle             As Long
+    dwX                 As Long
+    dwY                 As Long
+    dwXSize             As Long
+    dwYSize             As Long
+    dwXCountChars       As Long
+    dwYCountChars       As Long
+    dwFillAttribute     As Long
+    dwFlags             As Long
+    wShowWindow         As Integer
+    cbReserved2         As Integer
+    lpReserved2         As Long
+    hStdInput           As Long
+    hStdOutput          As Long
+    hStdError           As Long
+End Type
+
+Private Type PROCESS_INFORMATION
+    hProcess            As Long
+    hThread             As Long
+    dwProcessId         As Long
+    dwThreadId          As Long
+End Type
+
+Private Type TEXTMETRIC
+    tmHeight            As Long
+    tmAscent            As Long
+    tmDescent           As Long
+    tmInternalLeading   As Long
+    tmExternalLeading   As Long
+    tmAveCharWidth      As Long
+    tmMaxCharWidth      As Long
+    tmWeight            As Long
+    tmOverhang          As Long
+    tmDigitizedAspectX  As Long
+    tmDigitizedAspectY  As Long
+    tmFirstChar         As Byte
+    tmLastChar          As Byte
+    tmDefaultChar       As Byte
+    tmBreakChar         As Byte
+    tmItalic            As Byte
+    tmUnderlined        As Byte
+    tmStruckOut         As Byte
+    tmPitchAndFamily    As Byte
+    tmCharSet           As Byte
+End Type
+
+Private Type BITMAPINFOHEADER
+    biSize              As Long
+    biWidth             As Long
+    biHeight            As Long
+    biPlanes            As Integer
+    biBitCount          As Integer
+    biCompression       As Long
+    biSizeImage         As Long
+    biXPelsPerMeter     As Long
+    biYPelsPerMeter     As Long
+    biClrUsed           As Long
+    biClrImportant      As Long
+End Type
+
+Private Type JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    '--- BasicLimitInformation
+    PerProcessUserTimeLimit As Currency
+    PerJobUserTimeLimit     As Currency
+    LimitFlags              As Long
+    MinimumWorkingSetSize   As Long
+    MaximumWorkingSetSize   As Long
+    ActiveProcessLimit      As Long
+    Affinity                As Long
+    PriorityClass           As Long
+    SchedulingClass         As Long
+    dwPadding1              As Long
+    '--- IoInfo
+    ReadOperationCount      As Currency
+    WriteOperationCount     As Currency
+    OtherOperationCount     As Currency
+    ReadTransferCount       As Currency
+    WriteTransferCount      As Currency
+    OtherTransferCount      As Currency
+    '--- rest
+    ProcessMemoryLimit      As Long
+    JobMemoryLimit          As Long
+    PeakProcessMemoryUsed   As Long
+    PeakJobMemoryUsed       As Long
 End Type
 
 '=========================================================================
@@ -569,6 +739,8 @@ Private Const LNG_TILE_SIZE         As Long = 256
 Private Const LNG_CHALLENGE_SIZE    As Long = 16
 Private Const LNG_TIGHT_MIN_TO_COMPRESS As Long = 12
 Private Const LNG_MAX_BUFFER_SIZE   As Long = 5& * 1024 * 1024
+Private Const LNG_CONSOLE_COLS      As Long = 120
+Private Const LNG_CONSOLE_ROWS      As Long = 30
 
 Private m_cConnections          As Collection
 Private m_sPassword             As String
@@ -607,12 +779,35 @@ Private m_pFtpSendChecksums     As stdole.IUnknown
 Private m_sFtpSendArchiveFile   As String
 Private m_sFtpRecvFileName      As String
 Private m_pFtpRecvStream        As stdole.IUnknown
+#If ImplConsole Then
+    Private m_aColors(0 To 15)  As Long
+#End If
 
 Private Type UcsBuffer
     Data()              As Byte
     Pos                 As Long
     Size                As Long
     Paused              As Boolean
+End Type
+
+Private Type UcsConsoleContext
+    hConOut             As Long
+    hConIn              As Long
+    hMemDC              As Long
+    hDib                As Long
+    lpBits              As Long
+    hOldDib             As Long
+    Font                As IFont
+    hOldFont            As Long
+    CellWidth           As Long
+    CellHeight          As Long
+    BmpWidth            As Long
+    BmpHeight           As Long
+    ProcessInfo         As PROCESS_INFORMATION
+    hJob                As Long
+    CharInfo()          As CHAR_INFO
+    ScreenInfo          As CONSOLE_SCREEN_BUFFER_INFO
+    ShiftKeys           As Integer
 End Type
 
 Private Type UcsCaptureContext
@@ -629,6 +824,9 @@ Private Type UcsCaptureContext
     InSystemMemory      As Boolean
     Pitch               As Long
     Stride              As Long
+#If ImplConsole Then
+    ConsoleCtx          As UcsConsoleContext
+#End If
 End Type
 
 Private Type UcsCaptureTile
@@ -835,15 +1033,19 @@ QH:
 End Function
 
 Friend Sub frCloseConnection(oConn As cVncServer)
-    Dim uEmpty          As UcsCaptureContext
-    
     If Not oConn Is Nothing Then
         On Error Resume Next
         m_cConnections.Remove "#" & ObjPtr(oConn)
         On Error GoTo 0
     End If
     If m_cConnections.Count = 0 Then
-        m_uCaptureCtx = uEmpty
+        With m_uCaptureCtx
+            .DeviceName = vbNullString
+            Set .DesktopResource = Nothing
+            Set .Duplication = Nothing
+            Set .StageTexture = Nothing
+            Set .Context = Nothing
+        End With
         Set m_pTimer = Nothing
         m_oSocket.AsyncSelect ucsSfdAll
     End If
@@ -1183,9 +1385,9 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
     Const FUNC_NAME     As String = "pvHandleClientMessage"
     Dim lIdx            As Long
     Dim uPointerEvent   As RfbClientPointerEvent
+    Dim baData()        As Byte
 #If ImplFileTransfer Then
     Dim uFileTransfer   As RfbFileTransfer
-    Dim baData()        As Byte
     Dim uTightTransfer  As UcsTightTransfer
     Dim lSize           As Long
 #End If
@@ -1582,6 +1784,13 @@ Private Function pvHandleKeyEvent(uEvent As RfbClientKeyEvent) As Boolean
     #If ImplUseDebugLog Then
 '        DebugLog MODULE_NAME, FUNC_NAME, "uEvent.Key=&H" & Hex$(uEvent.Key) & ", uEvent.DownFlag=" & uEvent.DownFlag
     #End If
+    #If ImplConsole Then
+        If pvParent.frConsoleHandleKeyEvent(uEvent) Then
+            '--- success
+            pvHandleKeyEvent = True
+            GoTo QH
+        End If
+    #End If
     uInput.dwType = INPUT_KEYBOARD
     If uEvent.DownFlag = 0 Then
         uInput.dwFlags = KEYEVENTF_KEYUP
@@ -1604,6 +1813,7 @@ Private Function pvHandleKeyEvent(uEvent As RfbClientKeyEvent) As Boolean
     Call SendInput(1, uInput, LenB(uInput))
     '--- success
     pvHandleKeyEvent = True
+QH:
     Exit Function
 EH:
     PrintError FUNC_NAME & "(uEvent.Key=&H" & Hex$(uEvent.Key) & ")"
@@ -1649,6 +1859,13 @@ Private Function pvHandlePointerEvent(ByVal lLeft As Long, ByVal lTop As Long, u
     Dim lFlags          As Long
     Dim lWheel          As Long
     
+    #If ImplConsole Then
+        If pvParent.frConsoleHandlePointerEvent(uEvent) Then
+            '--- success
+            pvHandlePointerEvent = True
+            GoTo QH
+        End If
+    #End If
     lWidth = GetSystemMetrics(SM_CXSCREEN)
     lHeight = GetSystemMetrics(SM_CYSCREEN)
     If GetSystemMetrics(SM_SWAPBUTTON) = 0 Then
@@ -1682,6 +1899,7 @@ Private Function pvHandlePointerEvent(ByVal lLeft As Long, ByVal lTop As Long, u
     m_uClientPointerEvent = uEvent
     '--- success
     pvHandlePointerEvent = True
+QH:
 End Function
 
 Private Function pvHandleCutEvent(uEvent As RfbClientCutText) As Boolean
@@ -2282,6 +2500,8 @@ Private Function pvHandleTextChatMsg(uEvent As RfbTextChatMsg) As Boolean
     On Error GoTo EH
     If uEvent.Length < 0 Then
         pvParent.frFireOnTextChatMsg Me, -uEvent.Length
+    ElseIf Left$(uEvent.Text, 5) = "/sw" & vbCrLf Then
+        pvParent.frCaptureSetupDeviceIndex Rotate:=1
     Else
         pvParent.frFireOnTextChatMsg Me, 0, uEvent.Text
     End If
@@ -2304,16 +2524,23 @@ Public Function TimerProc() As Long
 Attribute TimerProc.VB_MemberFlags = "40"
     Const FUNC_NAME     As String = "TimerProc"
     Dim oConn           As cVncServer
+    Dim hProcess        As Long
     
     On Error GoTo EH
     Set m_pTimer = InitFireOnceTimerThunk(Me, pvAddressOfTimerProc.TimerProc)
     For Each oConn In m_cConnections
         oConn.frNotifyBeforeSendFrame
     Next
-    If m_uCaptureCtx.Duplication Is Nothing Then
+    #If ImplConsole Then
+        hProcess = m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess
+    #End If
+    If hProcess = 0 And m_uCaptureCtx.Duplication Is Nothing Then
         frCaptureSetupDeviceIndex
     End If
-    If Not m_uCaptureCtx.Duplication Is Nothing Then
+    #If ImplConsole Then
+        hProcess = m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess
+    #End If
+    If hProcess <> 0 Or Not m_uCaptureCtx.Duplication Is Nothing Then
         m_uCaptureFrame.NumTiles = 0
         m_uCaptureFrame.NumMoveRects = 0
         m_uCaptureFrame.PointerShapeBufferSize = 0
@@ -2326,6 +2553,14 @@ Attribute TimerProc.VB_MemberFlags = "40"
     For Each oConn In m_cConnections
         oConn.frNotifyAfterSendFrame
     Next
+    #If ImplConsole Then
+        If m_uCaptureCtx.Duplication Is Nothing And m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess <> 0 Then
+            If WaitForSingleObject(m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess, 0) = 0 Then
+                pvConsoleTerminate m_uCaptureCtx.ConsoleCtx
+                frCaptureSetupDeviceIndex Rotate:=1
+            End If
+        End If
+    #End If
 QH:
     Exit Function
 EH:
@@ -2437,6 +2672,12 @@ Private Function pvCaptureEnumDevices() As Collection
                 Replace(uAdapterDesc.Description, vbNullChar, vbNullString))
         Next
     Next
+    #If ImplConsole Then
+        If pvCaptureEnumDevices.Count = 0 Then
+            pvCaptureEnumDevices.Add vbNullString
+        End If
+        pvCaptureEnumDevices.Add Array("Console", "Console")
+    #End If
     Exit Function
 EH:
     PrintError FUNC_NAME
@@ -2475,6 +2716,26 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
         Set .Context = Nothing
         .Left = 0
         .Top = 0
+        #If ImplConsole Then
+            If sDeviceName = "Console" Then
+                If .ConsoleCtx.ProcessInfo.hProcess <> 0 Then
+                    If WaitForSingleObject(m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess, 0) = 0 Then
+                        pvConsoleTerminate m_uCaptureCtx.ConsoleCtx
+                    End If
+                End If
+                If .ConsoleCtx.ProcessInfo.hProcess = 0 Then
+                    pvCaptureInit = pvConsoleInit(.ConsoleCtx)
+                Else
+                    pvCaptureInit = True
+                End If
+                If pvCaptureInit Then
+                    .ConsoleCtx.CharInfo(0).UnicodeChar = -1
+                    .Width = .ConsoleCtx.BmpWidth
+                    .Height = .ConsoleCtx.BmpHeight
+                End If
+                GoTo QH
+            End If
+        #End If
         hDC = CreateDC(0, sDeviceName, 0, 0)
         If hDC <> 0 Then
             .Width = GetDeviceCaps(hDC, DESKTOPHORZRES)
@@ -2585,6 +2846,23 @@ Private Function pvCaptureFrame(uCtx As UcsCaptureContext, uFrame As UcsCaptureF
 
     On Error GoTo EH
     With uCtx
+        #If ImplConsole Then
+            If .Duplication Is Nothing And .ConsoleCtx.ProcessInfo.hProcess <> 0 Then
+                If pvConsoleRender(.ConsoleCtx) Then
+                    With uFrame
+                        .NumDirtyRects = 1
+                        ReDim .DirtyRects(0 To 0) As D3D11_RECT
+                        ReDim .DirtyBuffers(0 To 0) As UcsBuffer
+                        .DirtyRects(0).Right = uCtx.ConsoleCtx.BmpWidth
+                        .DirtyRects(0).Bottom = uCtx.ConsoleCtx.BmpHeight
+                        lSize = (.DirtyRects(0).Right - .DirtyRects(0).Left) * 4
+                        pvBufferWriteBlob .DirtyBuffers(0), uCtx.ConsoleCtx.lpBits, (.DirtyRects(0).Bottom - .DirtyRects(0).Top) * lSize
+                    End With
+                    pvCaptureFrame = pvCapturePrepareTiles(uFrame)
+                End If
+                GoTo QH
+            End If
+        #End If
         If .Duplication Is Nothing Then
             GoTo QH
         End If
@@ -3126,6 +3404,325 @@ Private Sub pvCapturePrepareLut(aLut() As Long, ByVal lMax As Long, ByVal lShift
 EH:
     PrintError FUNC_NAME
 End Sub
+
+#If ImplConsole Then
+Friend Function frConsoleHandleKeyEvent(uEvent As RfbClientKeyEvent) As Boolean
+    Const FUNC_NAME     As String = "frConsoleHandleKeyEvent"
+    Const VK_LSHIFT     As Long = 160
+    Const VK_RSHIFT     As Long = 161
+    Const VK_LCONTROL   As Long = 162
+    Const VK_RCONTROL   As Long = 163
+    Const VK_LMENU      As Long = 164
+    Const VK_RMENU      As Long = 165
+    Dim nVk             As Integer
+    Dim bExtended       As Boolean
+    Dim nMask           As Integer
+    
+    On Error GoTo EH
+    If m_uCaptureCtx.Duplication Is Nothing And m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess <> 0 Then
+        If pvMapToVirtualKey(uEvent.Key, nVk, bExtended) Then
+            Select Case nVk
+            Case VK_LSHIFT, VK_RSHIFT
+                nMask = vbShiftMask
+            Case VK_LCONTROL, VK_RCONTROL
+                nMask = vbCtrlMask
+            Case VK_LMENU, VK_RMENU
+                nMask = vbAltMask
+            Case vbKeyInsert
+                If m_uCaptureCtx.ConsoleCtx.ShiftKeys = vbShiftMask And Clipboard.GetFormat(vbCFText) Then
+                    pvConsoleSendText m_uCaptureCtx.ConsoleCtx.hConIn, Clipboard.GetText()
+                End If
+            End Select
+            If nMask <> 0 Then
+                If uEvent.DownFlag Then
+                    m_uCaptureCtx.ConsoleCtx.ShiftKeys = m_uCaptureCtx.ConsoleCtx.ShiftKeys Or nMask
+                Else
+                    m_uCaptureCtx.ConsoleCtx.ShiftKeys = m_uCaptureCtx.ConsoleCtx.ShiftKeys And Not nMask
+                End If
+            ElseIf uEvent.DownFlag Then
+                pvConsoleSendKey m_uCaptureCtx.ConsoleCtx.hConIn, 0, nVk, m_uCaptureCtx.ConsoleCtx.ShiftKeys
+            End If
+        ElseIf uEvent.DownFlag Then
+            Select Case uEvent.Key
+            Case vbKeyV, vbKeyV + 32
+                If m_uCaptureCtx.ConsoleCtx.ShiftKeys = vbCtrlMask And Clipboard.GetFormat(vbCFText) Then
+                    pvConsoleSendText m_uCaptureCtx.ConsoleCtx.hConIn, Clipboard.GetText()
+                End If
+            Case Else
+                pvConsoleSendKey m_uCaptureCtx.ConsoleCtx.hConIn, uEvent.Key, 0, 0
+            End Select
+        End If
+        '--- handled
+        frConsoleHandleKeyEvent = True
+    End If
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+    Resume Next
+End Function
+
+Friend Function frConsoleHandlePointerEvent(uEvent As RfbClientPointerEvent) As Boolean
+    Const LNG_BUTTON3       As Long = 2 ^ 2
+    
+    If m_uCaptureCtx.Duplication Is Nothing And m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess <> 0 Then
+        If (uEvent.ButtonMask And LNG_BUTTON3) <> (m_uClientPointerEvent.ButtonMask And LNG_BUTTON3) Then
+            If (uEvent.ButtonMask And LNG_BUTTON3) <> 0 Then
+                If Clipboard.GetFormat(vbCFText) Then
+                    pvConsoleSendText m_uCaptureCtx.ConsoleCtx.hConIn, Clipboard.GetText()
+                End If
+            End If
+        End If
+        '--- handled
+        frConsoleHandlePointerEvent = True
+    End If
+End Function
+
+Private Function pvConsoleInit(uCtx As UcsConsoleContext) As Boolean
+    Const SW_HIDE           As Long = 0
+    Const GENERIC_READ      As Long = &H80000000
+    Const GENERIC_WRITE     As Long = &H40000000
+    Const FILE_SHARE_READ   As Long = 1
+    Const FILE_SHARE_WRITE  As Long = 2
+    Const OPEN_EXISTING     As Long = 3
+    Const OPAQUE            As Long = 2
+    Const DIB_RGB_COLORS    As Long = 0
+    Const JobObjectExtendedLimitInformation As Long = 9
+    Const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE As Long = &H2000
+    Dim vSplit          As Variant
+    Dim lIdx            As Long
+    Dim uMetric         As TEXTMETRIC
+    Dim uRect           As SMALL_RECT
+    Dim uBmpHeader      As BITMAPINFOHEADER
+    Dim uStartup        As STARTUPINFO
+    Dim uLimit          As JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+    
+    If m_aColors(15) = 0 Then
+        vSplit = Split("&H0 &H800000 &H8000 &H808000 &H80 &H800080 &H8080 &HC0C0C0 &H808080 &HFF0000 &HFF00 &HFFFF00 &HFF &HFF00FF &HFFFF &HFFFFFF")
+        For lIdx = 0 To 15
+            m_aColors(lIdx) = vSplit(lIdx)
+        Next
+    End If
+    With uCtx
+        Call AllocConsole
+        Call ShowWindow(GetConsoleWindow(), SW_HIDE)
+        Call SetConsoleCtrlHandler(0, 1)
+        .hConOut = CreateFile(StrPtr("CONOUT$"), GENERIC_READ Or GENERIC_WRITE, FILE_SHARE_READ Or FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0)
+        .hConIn = CreateFile(StrPtr("CONIN$"), GENERIC_READ Or GENERIC_WRITE, FILE_SHARE_READ Or FILE_SHARE_WRITE, 0, OPEN_EXISTING, 0, 0)
+        Call SetConsoleWindowInfo(.hConOut, 1, uRect)
+        Call SetConsoleScreenBufferSize(.hConOut, MakeCoord(LNG_CONSOLE_COLS, LNG_CONSOLE_ROWS))
+        uRect.Right = LNG_CONSOLE_COLS - 1
+        uRect.Bottom = LNG_CONSOLE_ROWS - 1
+        Call SetConsoleWindowInfo(.hConOut, 1, uRect)
+        .hMemDC = CreateCompatibleDC(0)
+        Set .Font = New StdFont
+        .Font.Name = "Consolas"
+        .Font.Size = 11
+        .hOldFont = SelectObject(.hMemDC, .Font.hFont)
+        Call GetTextMetrics(.hMemDC, uMetric)
+        .CellWidth = uMetric.tmAveCharWidth
+        .CellHeight = uMetric.tmHeight + uMetric.tmExternalLeading
+        .BmpWidth = LNG_CONSOLE_COLS * .CellWidth
+        .BmpHeight = LNG_CONSOLE_ROWS * .CellHeight
+        With uBmpHeader
+            .biSize = LenB(uBmpHeader)
+            .biPlanes = 1
+            .biBitCount = 32
+            .biWidth = uCtx.BmpWidth
+            .biHeight = -uCtx.BmpHeight
+            .biSizeImage = (4 * uCtx.BmpWidth) * uCtx.BmpHeight
+        End With
+        .hDib = CreateDIBSection(.hMemDC, uBmpHeader, DIB_RGB_COLORS, .lpBits, 0, 0)
+        .hOldDib = SelectObject(.hMemDC, .hDib)
+        Call SetBkMode(.hMemDC, OPAQUE)
+        ReDim .CharInfo(0 To LNG_CONSOLE_COLS * LNG_CONSOLE_ROWS - 1)
+        uStartup.cb = LenB(uStartup)
+        Call CreateProcess(vbNullString, "cmd.exe", 0, 0, 0, 0, 0, vbNullString, uStartup, .ProcessInfo)
+        If .ProcessInfo.hProcess <> 0 Then
+            .hJob = CreateJobObject(0, 0)
+            If .hJob <> 0 Then
+                uLimit.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                Call SetInformationJobObject(.hJob, JobObjectExtendedLimitInformation, uLimit, LenB(uLimit))
+                Call AssignProcessToJobObject(.hJob, .ProcessInfo.hProcess)
+            End If
+            '--- success
+            pvConsoleInit = True
+        End If
+        .ShiftKeys = 0
+    End With
+End Function
+
+Private Function pvConsoleRender(uCtx As UcsConsoleContext) As Boolean
+    Dim uPrevScreen     As CONSOLE_SCREEN_BUFFER_INFO
+    Dim uPrevInfo()     As CHAR_INFO
+    Dim uRegion         As SMALL_RECT
+    Dim lRow            As Long
+    Dim lCol            As Long
+    Dim lIdx            As Long
+    Dim lAttr           As Long
+    Dim lLastFg         As Long
+    Dim lLastBg         As Long
+    Dim lCode           As Long
+    Dim sChar           As String
+    Dim lFg             As Long
+    Dim lBg             As Long
+    Dim uRect           As RECT
+    Dim hBrush          As Long
+    Dim bDirty          As Boolean
+    
+    With uCtx
+        If .hConOut = 0 Then
+            Exit Function
+        End If
+        uPrevScreen = .ScreenInfo
+        If GetConsoleScreenBufferInfo(.hConOut, .ScreenInfo) = 0 Then
+            Exit Function
+        End If
+        bDirty = uPrevScreen.dwCursorPosition.X <> .ScreenInfo.dwCursorPosition.X Or uPrevScreen.dwCursorPosition.Y <> .ScreenInfo.dwCursorPosition.Y
+        uPrevInfo = .CharInfo
+        uRegion.Right = LNG_CONSOLE_COLS - 1
+        uRegion.Bottom = LNG_CONSOLE_ROWS - 1
+        Call ReadConsoleOutput(.hConOut, .CharInfo(0), MakeCoord(LNG_CONSOLE_COLS, LNG_CONSOLE_ROWS), 0, uRegion)
+        lLastFg = -1
+        lLastBg = -1
+        For lRow = 0 To LNG_CONSOLE_ROWS - 1
+            For lCol = 0 To LNG_CONSOLE_COLS - 1
+                lIdx = lRow * LNG_CONSOLE_COLS + lCol
+                If uPrevInfo(lIdx).UnicodeChar <> .CharInfo(lIdx).UnicodeChar Or uPrevInfo(lIdx).Attributes <> .CharInfo(lIdx).Attributes _
+                        Or bDirty And uPrevScreen.dwCursorPosition.X = lCol And uPrevScreen.dwCursorPosition.Y = lRow Then
+                    lAttr = .CharInfo(lIdx).Attributes
+                    lFg = m_aColors(lAttr And &HF)
+                    lBg = m_aColors((lAttr \ &H10) And &HF)
+                    If lFg <> lLastFg Then
+                        Call SetTextColor(.hMemDC, lFg)
+                        lLastFg = lFg
+                    End If
+                    If lBg <> lLastBg Then
+                        Call SetBkColor(.hMemDC, lBg)
+                        lLastBg = lBg
+                    End If
+                    lCode = .CharInfo(lIdx).UnicodeChar And &HFFFF&
+                    If lCode = 0 Then
+                        lCode = 32
+                    End If
+                    sChar = ChrW$(lCode)
+                    Call TextOutW(.hMemDC, lCol * .CellWidth, lRow * .CellHeight, StrPtr(sChar), 1)
+                    bDirty = True
+                End If
+            Next
+        Next
+        If bDirty Then
+            uRect.Left = .ScreenInfo.dwCursorPosition.X * .CellWidth
+            uRect.Right = uRect.Left + .CellWidth
+            uRect.Bottom = (.ScreenInfo.dwCursorPosition.Y + 1) * .CellHeight
+            uRect.Top = uRect.Bottom - 2
+            hBrush = CreateSolidBrush(m_aColors(7))
+            Call FillRect(.hMemDC, uRect, hBrush)
+            Call DeleteObject(hBrush)
+            '--- success
+            pvConsoleRender = True
+        End If
+    End With
+End Function
+
+Private Sub pvConsoleSendKey(ByVal hConIn As Long, ByVal lUnicodeChar As Long, ByVal nVk As Integer, ByVal Shift As Integer)
+    Const SHIFT_PRESSED     As Long = &H10
+    Const LEFT_CTRL_PRESSED As Long = &H8
+    Const LEFT_ALT_PRESSED  As Long = &H4
+    Const KEY_EVENT         As Long = 1
+    Dim lScanCode       As Long
+    Dim aKeys(0 To 255) As Byte
+    Dim aBuf(0 To 7)    As Integer
+    Dim lCount          As Long
+    Dim lControlState   As Long
+    Dim uRecord         As INPUT_RECORD
+    Dim lWritten        As Long
+    
+    If hConIn = 0 Then
+        Exit Sub
+    End If
+    If lUnicodeChar = 0 Then
+        lScanCode = MapVirtualKey(nVk, 0)
+        Call GetKeyboardState(aKeys(0))
+        lCount = ToUnicode(nVk, lScanCode, aKeys(0), VarPtr(aBuf(0)), UBound(aBuf) + 1, 0)
+        If lCount = 1 Then
+            lUnicodeChar = aBuf(0)
+        Else
+            lUnicodeChar = 0
+        End If
+    ElseIf lUnicodeChar >= &H80 And lUnicodeChar <= &HFF Then
+        lUnicodeChar = AscW(Chr$(lUnicodeChar))
+    End If
+    If (Shift And vbShiftMask) <> 0 Then
+        lControlState = lControlState Or SHIFT_PRESSED
+    End If
+    If (Shift And vbCtrlMask) <> 0 Then
+        lControlState = lControlState Or LEFT_CTRL_PRESSED
+    End If
+    If (Shift And vbAltMask) <> 0 Then
+        lControlState = lControlState Or LEFT_ALT_PRESSED
+    End If
+    uRecord.EventType = KEY_EVENT
+    With uRecord.KeyEvent
+        .wRepeatCount = 1
+        .wVirtualKeyCode = nVk
+        .wVirtualScanCode = lScanCode And &HFFFF&
+        .UnicodeChar = lUnicodeChar And &HFFFF&
+        .dwControlKeyState = lControlState
+        .bKeyDown = 1
+    End With
+    Call WriteConsoleInput(hConIn, uRecord, 1, lWritten)
+    uRecord.KeyEvent.bKeyDown = 0
+    Call WriteConsoleInput(hConIn, uRecord, 1, lWritten)
+End Sub
+
+Private Sub pvConsoleSendText(ByVal hConIn As Long, ByVal sText As String)
+    Dim lIdx            As Long
+
+    sText = Replace(Replace(sText, vbCrLf, vbCr), vbLf, vbCr)
+    For lIdx = 1 To Len(sText)
+        pvConsoleSendKey hConIn, AscW(Mid$(sText, lIdx, 1)), 0, 0
+    Next
+End Sub
+
+Private Sub pvConsoleTerminate(uCtx As UcsConsoleContext)
+    With uCtx
+        If .ProcessInfo.hProcess <> 0 Then
+            Call TerminateProcess(.ProcessInfo.hProcess, 0)
+            Call CloseHandle(.ProcessInfo.hProcess)
+            .ProcessInfo.hProcess = 0
+        End If
+        If .ProcessInfo.hThread <> 0 Then
+            Call CloseHandle(.ProcessInfo.hThread)
+            .ProcessInfo.hThread = 0
+        End If
+        If .hConOut <> 0 Then
+            Call CloseHandle(.hConOut)
+            .hConOut = 0
+        End If
+        If .hConIn <> 0 Then
+            Call CloseHandle(.hConIn)
+            .hConIn = 0
+        End If
+        If .hMemDC <> 0 Then
+            Call SelectObject(.hMemDC, .hOldDib)
+            Call SelectObject(.hMemDC, .hOldFont)
+            Call DeleteObject(.hDib)
+            .hDib = 0
+            Call DeleteDC(.hMemDC)
+            .hMemDC = 0
+        End If
+        If .hJob <> 0 Then
+            Call CloseHandle(.hJob)
+            .hJob = 0
+        End If
+'        Call FreeConsole
+    End With
+End Sub
+
+Private Function MakeCoord(ByVal lX As Long, ByVal lY As Long) As Long
+    MakeCoord = (lY And &HFFFF&) * &H10000 Or (lX And &HFFFF&)
+End Function
+#End If
 
 '= helpers ===============================================================
 
@@ -4016,10 +4613,15 @@ End Property
 ' Base class events
 '=========================================================================
 
-#If ImplZlib Then
+#If ImplZlib Or ImplConsole Then
 Private Sub Class_Terminate()
-    If Not m_oZipArchive Is Nothing Then
-        m_oZipArchive.DeflateEnd m_hDeflateCtx
-    End If
+    #If ImplZlib Then
+        If Not m_oZipArchive Is Nothing Then
+            m_oZipArchive.DeflateEnd m_hDeflateCtx
+        End If
+    #End If
+    #If ImplConsole Then
+        pvConsoleTerminate m_uCaptureCtx.ConsoleCtx
+    #End If
 End Sub
 #End If

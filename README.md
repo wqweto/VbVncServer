@@ -17,9 +17,12 @@ Simple VNC Server in VB6 using DXGI Desktop Duplication
  - [ ] Supports file transfer protocol extensions
      - UltraVNC (including ZIP compression on folder downloads)
      - TightVNC (latest version of protocol extension only)
+ - [ ] Provides an out-of-band administrative console for support staff to run maintenance commands
+     - Spawns an off-screen command prompt on a dedicated virtual monitor
  - [ ] Single-thread asynchronous implementation
  - [ ] Conditional compilation to reduce footprint on final executable
      - Optional ZLib support
+     - Optional administrative console support
      - Optional histograms for JPEG quality estimation
 
 ### How to use
@@ -48,4 +51,4 @@ The snippet above allows optionally starting the built-in in your LOB applicatio
 
 Please when copy/pasting the sample code  use common sense and change the prefix of these environment variables to include your LOB application name.
 
-To reduce footprint on final executable you can optionally exclude `cZipArchive.cls` from your project by using `VNC_NOZLIB = 1` in conditional compilation settings which will remove (or reduce) some of the server functionalities.
+To reduce footprint on final executable you can optionally exclude `cZipArchive.cls` from your project by using `VNC_NO_ZLIB = 1` in conditional compilation settings which will remove (or reduce) some of the server functionalities. Similarly, the administrative console can be excluded with `VNC_NO_CONSOLE = 1`.
