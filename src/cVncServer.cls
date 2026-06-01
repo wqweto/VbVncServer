@@ -205,11 +205,13 @@ Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBD3D11.VBGUID, 
     Private Declare Function SetConsoleWindowInfo Lib "kernel32" (ByVal hConsoleOutput As Long, ByVal bAbsolute As Long, lpConsoleWindow As SMALL_RECT) As Long
     Private Declare Function ReadConsoleOutput Lib "kernel32" Alias "ReadConsoleOutputW" (ByVal hConsoleOutput As Long, lpBuffer As Any, ByVal dwBufferSize As Long, ByVal dwBufferCoord As Long, lpReadRegion As SMALL_RECT) As Long
     Private Declare Function WriteConsoleInput Lib "kernel32" Alias "WriteConsoleInputW" (ByVal hConsoleInput As Long, lpBuffer As INPUT_RECORD, ByVal nLength As Long, lpNumberOfEventsWritten As Long) As Long
-    Private Declare Function CreateProcess Lib "kernel32" Alias "CreateProcessA" (ByVal lpApplicationName As String, ByVal lpCommandLine As String, ByVal lpProcessAttributes As Long, ByVal lpThreadAttributes As Long, ByVal bInheritHandles As Long, ByVal dwCreationFlags As Long, ByVal lpEnvironment As Long, ByVal lpCurrentDirectory As String, lpStartupInfo As STARTUPINFO, lpProcessInformation As PROCESS_INFORMATION) As Long
+    Private Declare Function CreateProcess Lib "kernel32" Alias "CreateProcessW" (ByVal lpApplicationName As Long, ByVal lpCommandLine As Long, ByVal lpProcessAttributes As Long, ByVal lpThreadAttributes As Long, ByVal bInheritHandles As Long, ByVal dwCreationFlags As Long, ByVal lpEnvironment As Long, ByVal lpCurrentDirectory As Long, lpStartupInfo As STARTUPINFO, lpProcessInformation As PROCESS_INFORMATION) As Long
     Private Declare Function TerminateProcess Lib "kernel32" (ByVal hProcess As Long, ByVal uExitCode As Long) As Long
     Private Declare Function CreateJobObject Lib "kernel32" Alias "CreateJobObjectW" (ByVal lpJobAttributes As Long, ByVal lpName As Long) As Long
     Private Declare Function SetInformationJobObject Lib "kernel32" (ByVal hJob As Long, ByVal JobObjectInformationClass As Long, lpJobObjectInformation As Any, ByVal cbJobObjectInformationLength As Long) As Long
     Private Declare Function AssignProcessToJobObject Lib "kernel32" (ByVal hJob As Long, ByVal hProcess As Long) As Long
+    Private Declare Function APIGetSystemDirectory Lib "kernel32" Alias "GetSystemDirectoryW" (ByVal lpBuffer As Long, ByVal uSize As Long) As Long
+    Private Declare Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As Long, ByVal dwMilliseconds As Long) As Long
     Private Declare Function CreateCompatibleDC Lib "gdi32" (ByVal hDC As Long) As Long
     Private Declare Function SelectObject Lib "gdi32" (ByVal hDC As Long, ByVal hObject As Long) As Long
     Private Declare Function DeleteObject Lib "gdi32" (ByVal hObject As Long) As Long
@@ -217,15 +219,15 @@ Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBD3D11.VBGUID, 
     Private Declare Function SetBkColor Lib "gdi32" (ByVal hDC As Long, ByVal crColor As Long) As Long
     Private Declare Function SetBkMode Lib "gdi32" (ByVal hDC As Long, ByVal nBkMode As Long) As Long
     Private Declare Function TextOutW Lib "gdi32" (ByVal hDC As Long, ByVal X As Long, ByVal Y As Long, ByVal lpString As Long, ByVal nCount As Long) As Long
-    Private Declare Function GetTextMetrics Lib "gdi32" Alias "GetTextMetricsA" (ByVal hDC As Long, lpMetrics As TEXTMETRIC) As Long
+    Private Declare Function GetTextMetrics Lib "gdi32" Alias "GetTextMetricsW" (ByVal hDC As Long, lpMetrics As TEXTMETRICW) As Long
     Private Declare Function CreateSolidBrush Lib "gdi32" (ByVal crColor As Long) As Long
     Private Declare Function CreateDIBSection Lib "gdi32" (ByVal hDC As Long, lpBitsInfo As Any, ByVal wUsage As Long, lpBits As Long, ByVal Handle As Long, ByVal dw As Long) As Long
     Private Declare Function ShowWindow Lib "user32" (ByVal hWnd As Long, ByVal nCmdShow As Long) As Long
     Private Declare Function FillRect Lib "user32" (ByVal hDC As Long, lpRect As RECT, ByVal hBrush As Long) As Long
-    Private Declare Function MapVirtualKey Lib "user32" Alias "MapVirtualKeyA" (ByVal uCode As Long, ByVal uMapType As Long) As Long
+    Private Declare Function MapVirtualKey Lib "user32" Alias "MapVirtualKeyW" (ByVal uCode As Long, ByVal uMapType As Long) As Long
     Private Declare Function GetKeyboardState Lib "user32" (pbKeyState As Byte) As Long
     Private Declare Function ToUnicode Lib "user32" (ByVal wVirtKey As Long, ByVal wScanCode As Long, lpKeyState As Byte, ByVal pwszBuff As Long, ByVal cchBuff As Long, ByVal wFlags As Long) As Long
-    Private Declare Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As Long, ByVal dwMilliseconds As Long) As Long
+    Private Declare Function CreateDesktop Lib "user32" Alias "CreateDesktopW" (ByVal lpszDesktop As Long, ByVal lpszDevice As Long, ByVal pDevMode As Long, ByVal dwFlags As Long, ByVal dwDesiredAccess As Long, ByVal lpsa As Long) As Long
 #End If
 
 Private Type BLOBHEADER
@@ -337,7 +339,7 @@ Private Type PROCESS_INFORMATION
     dwThreadId          As Long
 End Type
 
-Private Type TEXTMETRIC
+Private Type TEXTMETRICW
     tmHeight            As Long
     tmAscent            As Long
     tmDescent           As Long
@@ -349,10 +351,10 @@ Private Type TEXTMETRIC
     tmOverhang          As Long
     tmDigitizedAspectX  As Long
     tmDigitizedAspectY  As Long
-    tmFirstChar         As Byte
-    tmLastChar          As Byte
-    tmDefaultChar       As Byte
-    tmBreakChar         As Byte
+    tmFirstChar         As Integer
+    tmLastChar          As Integer
+    tmDefaultChar       As Integer
+    tmBreakChar         As Integer
     tmItalic            As Byte
     tmUnderlined        As Byte
     tmStruckOut         As Byte
@@ -808,6 +810,7 @@ Private Type UcsConsoleContext
     CharInfo()          As CHAR_INFO
     ScreenInfo          As CONSOLE_SCREEN_BUFFER_INFO
     ShiftKeys           As Integer
+    hDesktop            As Long
 End Type
 
 Private Type UcsCaptureContext
@@ -3488,9 +3491,11 @@ Private Function pvConsoleInit(uCtx As UcsConsoleContext) As Boolean
     Const DIB_RGB_COLORS    As Long = 0
     Const JobObjectExtendedLimitInformation As Long = 9
     Const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE As Long = &H2000
+    Const STR_DESKTOP       As String = "UcsConsole"
+    Const GENERIC_ALL       As Long = &H10000000
     Dim vSplit          As Variant
     Dim lIdx            As Long
-    Dim uMetric         As TEXTMETRIC
+    Dim uMetric         As TEXTMETRICW
     Dim uRect           As SMALL_RECT
     Dim uBmpHeader      As BITMAPINFOHEADER
     Dim uStartup        As STARTUPINFO
@@ -3535,8 +3540,12 @@ Private Function pvConsoleInit(uCtx As UcsConsoleContext) As Boolean
         .hOldDib = SelectObject(.hMemDC, .hDib)
         Call SetBkMode(.hMemDC, OPAQUE)
         ReDim .CharInfo(0 To LNG_CONSOLE_COLS * LNG_CONSOLE_ROWS - 1)
+        .hDesktop = CreateDesktop(StrPtr(STR_DESKTOP), 0, 0, 0, GENERIC_ALL, 0)
         uStartup.cb = LenB(uStartup)
-        Call CreateProcess(vbNullString, "cmd.exe", 0, 0, 0, 0, 0, vbNullString, uStartup, .ProcessInfo)
+        If .hDesktop <> 0 Then
+            uStartup.lpDesktop = StrPtr(STR_DESKTOP)
+        End If
+        Call CreateProcess(0, StrPtr(GetSystemDirectory & "\cmd.exe"), 0, 0, 0, 0, 0, 0, uStartup, .ProcessInfo)
         If .ProcessInfo.hProcess <> 0 Then
             .hJob = CreateJobObject(0, 0)
             If .hJob <> 0 Then
@@ -3715,12 +3724,22 @@ Private Sub pvConsoleTerminate(uCtx As UcsConsoleContext)
             Call CloseHandle(.hJob)
             .hJob = 0
         End If
+        If .hDesktop <> 0 Then
+            Call CloseDesktop(.hDesktop)
+            .hDesktop = 0
+        End If
 '        Call FreeConsole
     End With
 End Sub
 
 Private Function MakeCoord(ByVal lX As Long, ByVal lY As Long) As Long
     MakeCoord = (lY And &HFFFF&) * &H10000 Or (lX And &HFFFF&)
+End Function
+
+Private Function GetSystemDirectory() As String
+    GetSystemDirectory = String$(1024, 0)
+    Call APIGetSystemDirectory(StrPtr(GetSystemDirectory), Len(GetSystemDirectory))
+    GetSystemDirectory = Replace(GetSystemDirectory, vbNullChar, vbNullString)
 End Function
 #End If
 
