@@ -141,7 +141,7 @@ Private Declare Function OpenInputDesktop Lib "user32" (ByVal dwFlags As Long, B
 Private Declare Function CloseDesktop Lib "user32" (ByVal hDesktop As Long) As Long
 Private Declare Function SetThreadDesktop Lib "user32" (ByVal hDesktop As Long) As Long
 Private Declare Function D3DKMTSetProcessSchedulingPriorityClass Lib "gdi32" (ByVal hProcess As Long, ByVal lPriority As Long) As Long
-Private Declare Function CreateDC Lib "gdi32" Alias "CreateDCA" (ByVal lpDriverName As Long, ByVal lpDeviceName As String, ByVal lpOutput As Long, ByVal lpInitData As Long) As Long
+Private Declare Function CreateDC Lib "gdi32" Alias "CreateDCW" (ByVal lpDriverName As Long, ByVal lpDeviceName As Long, ByVal lpOutput As Long, ByVal lpInitData As Long) As Long
 Private Declare Function GetDeviceCaps Lib "gdi32" (ByVal hDC As Long, ByVal nIndex As Long) As Long
 Private Declare Function DeleteDC Lib "gdi32" (ByVal hDC As Long) As Long
 '--- ole/oleaut/shell
@@ -210,7 +210,7 @@ Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBD3D11.VBGUID, 
     Private Declare Function CreateJobObject Lib "kernel32" Alias "CreateJobObjectW" (ByVal lpJobAttributes As Long, ByVal lpName As Long) As Long
     Private Declare Function SetInformationJobObject Lib "kernel32" (ByVal hJob As Long, ByVal JobObjectInformationClass As Long, lpJobObjectInformation As Any, ByVal cbJobObjectInformationLength As Long) As Long
     Private Declare Function AssignProcessToJobObject Lib "kernel32" (ByVal hJob As Long, ByVal hProcess As Long) As Long
-    Private Declare Function APIGetSystemDirectory Lib "kernel32" Alias "GetSystemDirectoryW" (ByVal lpBuffer As Long, ByVal uSize As Long) As Long
+    Private Declare Function APIGetSystemDirectory Lib "kernel32" Alias "GetSystemDirectoryW" (ByVal lpBuffer As Long, ByVal uSize_ As Long) As Long
     Private Declare Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As Long, ByVal dwMilliseconds As Long) As Long
     Private Declare Function CreateCompatibleDC Lib "gdi32" (ByVal hDC As Long) As Long
     Private Declare Function SelectObject Lib "gdi32" (ByVal hDC As Long, ByVal hObject As Long) As Long
@@ -2505,6 +2505,10 @@ Private Function pvHandleTextChatMsg(uEvent As RfbTextChatMsg) As Boolean
         pvParent.frFireOnTextChatMsg Me, -uEvent.Length
     ElseIf Left$(uEvent.Text, 5) = "/sw" & vbCrLf Then
         pvParent.frCaptureSetupDeviceIndex Rotate:=1
+#If ImplConsole Then
+    ElseIf Left$(uEvent.Text, 14) = "/killconsole" & vbCrLf Then
+        pvParent.frConsoleTerminate
+#End If
     Else
         pvParent.frFireOnTextChatMsg Me, 0, uEvent.Text
     End If
@@ -2739,7 +2743,7 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
                 GoTo QH
             End If
         #End If
-        hDC = CreateDC(0, sDeviceName, 0, 0)
+        hDC = CreateDC(0, StrPtr(sDeviceName), 0, 0)
         If hDC <> 0 Then
             .Width = GetDeviceCaps(hDC, DESKTOPHORZRES)
             .Height = GetDeviceCaps(hDC, DESKTOPVERTRES)
@@ -3479,6 +3483,10 @@ Friend Function frConsoleHandlePointerEvent(uEvent As RfbClientPointerEvent) As 
         frConsoleHandlePointerEvent = True
     End If
 End Function
+
+Friend Sub frConsoleTerminate()
+    pvConsoleTerminate m_uCaptureCtx.ConsoleCtx
+End Sub
 
 Private Function pvConsoleInit(uCtx As UcsConsoleContext) As Boolean
     Const SW_HIDE           As Long = 0
