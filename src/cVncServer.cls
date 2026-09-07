@@ -229,6 +229,16 @@ Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBD3D11.VBGUID, 
     Private Declare Function ToUnicode Lib "user32" (ByVal wVirtKey As Long, ByVal wScanCode As Long, lpKeyState As Byte, ByVal pwszBuff As Long, ByVal cchBuff As Long, ByVal wFlags As Long) As Long
     Private Declare Function CreateDesktop Lib "user32" Alias "CreateDesktopW" (ByVal lpszDesktop As Long, ByVal lpszDevice As Long, ByVal pDevMode As Long, ByVal dwFlags As Long, ByVal dwDesiredAccess As Long, ByVal lpsa As Long) As Long
 #End If
+'--- GDI fallback capture (sem DXGI / sem GPU)
+Private Declare Function BitBlt Lib "gdi32" (ByVal hdcDest As Long, ByVal xDest As Long, ByVal yDest As Long, ByVal wDest As Long, ByVal hDest As Long, ByVal hdcSrc As Long, ByVal xSrc As Long, ByVal ySrc As Long, ByVal Rop As Long) As Long
+Private Declare Function GetDC Lib "user32" (ByVal hWnd As Long) As Long
+Private Declare Function ReleaseDC Lib "user32" (ByVal hWnd As Long, ByVal hdc As Long) As Long
+#If Not ImplConsole Then
+    Private Declare Function CreateCompatibleDC Lib "gdi32" (ByVal hdc As Long) As Long
+    Private Declare Function SelectObject Lib "gdi32" (ByVal hdc As Long, ByVal hObject As Long) As Long
+    Private Declare Function DeleteObject Lib "gdi32" (ByVal hObject As Long) As Long
+    Private Declare Function CreateDIBSection Lib "gdi32" (ByVal hdc As Long, lpBitsInfo As Any, ByVal wUsage As Long, lpBits As Long, ByVal Handle As Long, ByVal dw As Long) As Long
+#End If
 
 Private Type BLOBHEADER
     bType               As Byte
@@ -827,6 +837,12 @@ Private Type UcsCaptureContext
     InSystemMemory      As Boolean
     Pitch               As Long
     Stride              As Long
+    GdiMode             As Boolean
+    hScreenDC           As Long
+    hMemDC              As Long
+    hDib                As Long
+    lpBits              As Long
+    hOldDib             As Long
 #If ImplConsole Then
     ConsoleCtx          As UcsConsoleContext
 #End If
@@ -2541,15 +2557,16 @@ Attribute TimerProc.VB_MemberFlags = "40"
     #If ImplConsole Then
         hProcess = m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess
     #End If
-    If hProcess = 0 And m_uCaptureCtx.Duplication Is Nothing Then
+If hProcess = 0 And m_uCaptureCtx.Duplication Is Nothing And Not m_uCaptureCtx.GdiMode Then
         frCaptureSetupDeviceIndex
     End If
     #If ImplConsole Then
         hProcess = m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess
     #End If
-    If hProcess <> 0 Or Not m_uCaptureCtx.Duplication Is Nothing Then
+If hProcess <> 0 Or Not m_uCaptureCtx.Duplication Is Nothing Or m_uCaptureCtx.GdiMode Then
         m_uCaptureFrame.NumTiles = 0
         m_uCaptureFrame.NumMoveRects = 0
+        m_uCaptureFrame.PointerShapeBufferSize = 0
         m_uCaptureFrame.PointerShapeBufferSize = 0
         If pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
             For Each oConn In m_cConnections
@@ -2785,7 +2802,7 @@ Continue:
             Next
         Next
         If pOutput Is Nothing Then
-            GoTo QH
+            GoTo TryGdi
         End If
         .DeviceName = Replace(uOutputDesc.DeviceName, vbNullChar, vbNullString)
         '--- convert logical to physical coordinates (undo DPI scaling)
@@ -2793,16 +2810,16 @@ Continue:
         .Top = uOutputDesc.DesktopCoordinates.Top * .Height \ (uOutputDesc.DesktopCoordinates.Bottom - uOutputDesc.DesktopCoordinates.Top)
         .Timeout = lTimeout
         hResult = D3D11CreateDevice(pAdapter, D3D_DRIVER_TYPE_UNKNOWN, 0, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, ByVal 0, 0, D3D11_SDK_VERSION, pD3D11Device, 0, .Context)
-        If hResult < 0 Then
-            Err.Raise hResult, "D3D11CreateDevice"
+If hResult < 0 Then
+            GoTo TryGdi
         End If
         Call D3DKMTSetProcessSchedulingPriorityClass(GetCurrentProcess(), D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME)
         Set pDXGIDevice = pD3D11Device
         pDXGIDevice.SetGPUThreadPriority 7
         pDXGIDevice.SetMaximumFrameLatency 1
         hResult = pOutput.DuplicateOutput(pD3D11Device, .Duplication)
-        If hResult < 0 Then
-            GoTo QH
+If hResult < 0 Then
+            GoTo TryGdi
         End If
         .Duplication.GetDesc uDuplDesc
         .InSystemMemory = (uDuplDesc.DesktopImageInSystemMemory <> 0)
@@ -2822,20 +2839,83 @@ Continue:
         End With
         Set .StageTexture = pD3D11Device.CreateTexture2D(uTextureDesc, ByVal 0)
         hResult = .Context.Map(.StageTexture, 0, D3D11_MAP_READ, 0, uResource)
-        If hResult < 0 Then
-            Err.Raise hResult, "ID3D11DeviceContext.Map"
+If hResult < 0 Then
+            GoTo TryGdi
         End If
         .Pitch = uResource.RowPitch
         .Stride = uResource.RowPitch / IIf(uDuplDesc.ModeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT, 8, 4)
         .Context.Unmap .StageTexture, 0
     End With
     '--- success
-    pvCaptureInit = True
+pvCaptureInit = True
+    GoTo QH
+TryGdi:
+    pvCaptureInit = pvCaptureInitGdi(uCtx)
 QH:
     Exit Function
 EH:
     PrintError FUNC_NAME
 End Function
+'--- init GDI fallback capture (sem DXGI)
+Private Function pvCaptureInitGdi(uCtx As UcsCaptureContext) As Boolean
+    Const FUNC_NAME     As String = "pvCaptureInitGdi"
+    Const DIB_RGB_COLORS As Long = 0
+    Dim uBmpHeader      As BITMAPINFOHEADER
+
+    On Error GoTo EH
+    Call pvCaptureTerminateGdi(uCtx)
+    With uCtx
+        If .Width = 0 Or .Height = 0 Then
+            .Width = GetSystemMetrics(SM_CXSCREEN)
+            .Height = GetSystemMetrics(SM_CYSCREEN)
+        End If
+        .hScreenDC = GetDC(0)
+        .hMemDC = CreateCompatibleDC(.hScreenDC)
+        With uBmpHeader
+            .biSize = LenB(uBmpHeader)
+            .biPlanes = 1
+            .biBitCount = 32
+            .biWidth = uCtx.Width
+            .biHeight = -uCtx.Height
+            .biSizeImage = (4 * uCtx.Width) * uCtx.Height
+        End With
+        .hDib = CreateDIBSection(.hMemDC, uBmpHeader, DIB_RGB_COLORS, .lpBits, 0, 0)
+        If .hDib <> 0 Then
+            .hOldDib = SelectObject(.hMemDC, .hDib)
+            .GdiMode = True
+        End If
+    End With
+    '--- success
+    pvCaptureInitGdi = uCtx.GdiMode
+    GoTo QH
+QH:
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+End Function
+
+'--- libera objetos GDI do fallback
+Private Sub pvCaptureTerminateGdi(uCtx As UcsCaptureContext)
+    With uCtx
+        If .hOldDib <> 0 Then
+            Call SelectObject(.hMemDC, .hOldDib)
+            .hOldDib = 0
+        End If
+        If .hDib <> 0 Then
+            Call DeleteObject(.hDib)
+            .hDib = 0
+        End If
+        If .hMemDC <> 0 Then
+            Call DeleteDC(.hMemDC)
+            .hMemDC = 0
+        End If
+        If .hScreenDC <> 0 Then
+            Call ReleaseDC(0, .hScreenDC)
+            .hScreenDC = 0
+        End If
+        .GdiMode = False
+    End With
+End Sub
 
 Private Function pvCaptureFrame(uCtx As UcsCaptureContext, uFrame As UcsCaptureFrame) As Boolean
     Const FUNC_NAME     As String = "pvCaptureFrame"
@@ -2853,6 +2933,26 @@ Private Function pvCaptureFrame(uCtx As UcsCaptureContext, uFrame As UcsCaptureF
 
     On Error GoTo EH
     With uCtx
+        If .GdiMode Then
+            Call BitBlt(.hMemDC, 0, 0, .Width, .Height, .hScreenDC, 0, 0, vbSrcCopy)
+With uFrame
+                .NumMoveRects = 0
+                .NumDirtyRects = 1
+                ReDim .DirtyRects(0 To 0) As D3D11_RECT
+                ReDim .DirtyBuffers(0 To 0) As UcsBuffer
+                ReDim .MoveRects(0 To 0) As DXGI_OUTDUPL_MOVE_RECT
+                ReDim .PointerShape(0 To 4095) As Byte
+                ReDim .Tiles(0 To 127) As UcsCaptureTile
+                .DirtyRects(0).Right = uCtx.Width
+                .DirtyRects(0).Bottom = uCtx.Height
+                .PointerShapeBufferSize = 0
+                .PointerPosition.Position.x = -1
+                lSize = uCtx.Width * 4
+                pvBufferWriteBlob .DirtyBuffers(0), uCtx.lpBits, uCtx.Height * lSize
+            End With
+            pvCaptureFrame = pvCapturePrepareTiles(uFrame)
+            GoTo QH
+        End If
         #If ImplConsole Then
             If .Duplication Is Nothing And .ConsoleCtx.ProcessInfo.hProcess <> 0 Then
                 If pvConsoleRender(.ConsoleCtx) Then
@@ -4449,7 +4549,7 @@ Private Sub m_oSocket_OnAccept()
     If Not m_oSocket.Accept(oSocket) Then
         GoTo QH
     End If
-    If m_cConnections.Count = 0 Or m_uCaptureCtx.Duplication Is Nothing Then
+If m_cConnections.Count = 0 Or (m_uCaptureCtx.Duplication Is Nothing And Not m_uCaptureCtx.GdiMode) Then
         frCaptureSetupDeviceIndex
     End If
     Set oConn = New cVncServer
