@@ -142,8 +142,8 @@ Private Declare Function CloseDesktop Lib "user32" (ByVal hDesktop As Long) As L
 Private Declare Function SetThreadDesktop Lib "user32" (ByVal hDesktop As Long) As Long
 Private Declare Function D3DKMTSetProcessSchedulingPriorityClass Lib "gdi32" (ByVal hProcess As Long, ByVal lPriority As Long) As Long
 Private Declare Function CreateDC Lib "gdi32" Alias "CreateDCW" (ByVal lpDriverName As Long, ByVal lpDeviceName As Long, ByVal lpOutput As Long, ByVal lpInitData As Long) As Long
-Private Declare Function GetDeviceCaps Lib "gdi32" (ByVal hDC As Long, ByVal nIndex As Long) As Long
-Private Declare Function DeleteDC Lib "gdi32" (ByVal hDC As Long) As Long
+Private Declare Function GetDeviceCaps Lib "gdi32" (ByVal hdc As Long, ByVal nIndex As Long) As Long
+Private Declare Function DeleteDC Lib "gdi32" (ByVal hdc As Long) As Long
 '--- ole/oleaut/shell
 Private Declare Sub CoTaskMemFree Lib "ole32" (ByVal pv As Long)
 Private Declare Function DispCallFunc Lib "oleaut32" (ByVal pvInstance As Long, ByVal oVft As Long, ByVal lCc As Long, ByVal vtReturn As VbVarType, ByVal cActuals As Long, prgVt As Any, prgpVarg As Any, pvargResult As Variant) As Long
@@ -212,22 +212,32 @@ Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBD3D11.VBGUID, 
     Private Declare Function AssignProcessToJobObject Lib "kernel32" (ByVal hJob As Long, ByVal hProcess As Long) As Long
     Private Declare Function APIGetSystemDirectory Lib "kernel32" Alias "GetSystemDirectoryW" (ByVal lpBuffer As Long, ByVal uSize_ As Long) As Long
     Private Declare Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As Long, ByVal dwMilliseconds As Long) As Long
-    Private Declare Function CreateCompatibleDC Lib "gdi32" (ByVal hDC As Long) As Long
-    Private Declare Function SelectObject Lib "gdi32" (ByVal hDC As Long, ByVal hObject As Long) As Long
+    Private Declare Function CreateCompatibleDC Lib "gdi32" (ByVal hdc As Long) As Long
+    Private Declare Function SelectObject Lib "gdi32" (ByVal hdc As Long, ByVal hObject As Long) As Long
     Private Declare Function DeleteObject Lib "gdi32" (ByVal hObject As Long) As Long
-    Private Declare Function SetTextColor Lib "gdi32" (ByVal hDC As Long, ByVal crColor As Long) As Long
-    Private Declare Function SetBkColor Lib "gdi32" (ByVal hDC As Long, ByVal crColor As Long) As Long
-    Private Declare Function SetBkMode Lib "gdi32" (ByVal hDC As Long, ByVal nBkMode As Long) As Long
-    Private Declare Function TextOutW Lib "gdi32" (ByVal hDC As Long, ByVal X As Long, ByVal Y As Long, ByVal lpString As Long, ByVal nCount As Long) As Long
-    Private Declare Function GetTextMetrics Lib "gdi32" Alias "GetTextMetricsW" (ByVal hDC As Long, lpMetrics As TEXTMETRICW) As Long
+    Private Declare Function SetTextColor Lib "gdi32" (ByVal hdc As Long, ByVal crColor As Long) As Long
+    Private Declare Function SetBkColor Lib "gdi32" (ByVal hdc As Long, ByVal crColor As Long) As Long
+    Private Declare Function SetBkMode Lib "gdi32" (ByVal hdc As Long, ByVal nBkMode As Long) As Long
+    Private Declare Function TextOutW Lib "gdi32" (ByVal hdc As Long, ByVal x As Long, ByVal y As Long, ByVal lpString As Long, ByVal nCount As Long) As Long
+    Private Declare Function GetTextMetrics Lib "gdi32" Alias "GetTextMetricsW" (ByVal hdc As Long, lpMetrics As TEXTMETRICW) As Long
     Private Declare Function CreateSolidBrush Lib "gdi32" (ByVal crColor As Long) As Long
-    Private Declare Function CreateDIBSection Lib "gdi32" (ByVal hDC As Long, lpBitsInfo As Any, ByVal wUsage As Long, lpBits As Long, ByVal Handle As Long, ByVal dw As Long) As Long
+    Private Declare Function CreateDIBSection Lib "gdi32" (ByVal hdc As Long, lpBitsInfo As Any, ByVal wUsage As Long, lpBits As Long, ByVal Handle As Long, ByVal dw As Long) As Long
     Private Declare Function ShowWindow Lib "user32" (ByVal hWnd As Long, ByVal nCmdShow As Long) As Long
-    Private Declare Function FillRect Lib "user32" (ByVal hDC As Long, lpRect As RECT, ByVal hBrush As Long) As Long
+    Private Declare Function FillRect Lib "user32" (ByVal hdc As Long, lpRect As RECT, ByVal hBrush As Long) As Long
     Private Declare Function MapVirtualKey Lib "user32" Alias "MapVirtualKeyW" (ByVal uCode As Long, ByVal uMapType As Long) As Long
     Private Declare Function GetKeyboardState Lib "user32" (pbKeyState As Byte) As Long
     Private Declare Function ToUnicode Lib "user32" (ByVal wVirtKey As Long, ByVal wScanCode As Long, lpKeyState As Byte, ByVal pwszBuff As Long, ByVal cchBuff As Long, ByVal wFlags As Long) As Long
     Private Declare Function CreateDesktop Lib "user32" Alias "CreateDesktopW" (ByVal lpszDesktop As Long, ByVal lpszDevice As Long, ByVal pDevMode As Long, ByVal dwFlags As Long, ByVal dwDesiredAccess As Long, ByVal lpsa As Long) As Long
+#End If
+'--- GDI fallback capture (sem DXGI / sem GPU)
+Private Declare Function BitBlt Lib "gdi32" (ByVal hdcDest As Long, ByVal xDest As Long, ByVal yDest As Long, ByVal wDest As Long, ByVal hDest As Long, ByVal hdcSrc As Long, ByVal xSrc As Long, ByVal ySrc As Long, ByVal Rop As Long) As Long
+Private Declare Function GetDC Lib "user32" (ByVal hWnd As Long) As Long
+Private Declare Function ReleaseDC Lib "user32" (ByVal hWnd As Long, ByVal hdc As Long) As Long
+#If Not ImplConsole Then
+    Private Declare Function CreateCompatibleDC Lib "gdi32" (ByVal hdc As Long) As Long
+    Private Declare Function SelectObject Lib "gdi32" (ByVal hdc As Long, ByVal hObject As Long) As Long
+    Private Declare Function DeleteObject Lib "gdi32" (ByVal hObject As Long) As Long
+    Private Declare Function CreateDIBSection Lib "gdi32" (ByVal hdc As Long, lpBitsInfo As Any, ByVal wUsage As Long, lpBits As Long, ByVal Handle As Long, ByVal dw As Long) As Long
 #End If
 
 Private Type BLOBHEADER
@@ -265,8 +275,8 @@ Private Type KEYBOARD_INPUT
 End Type
 
 Private Type COORD
-    X                   As Integer
-    Y                   As Integer
+    x                   As Integer
+    y                   As Integer
 End Type
 
 Private Type SMALL_RECT
@@ -827,6 +837,12 @@ Private Type UcsCaptureContext
     InSystemMemory      As Boolean
     Pitch               As Long
     Stride              As Long
+    GdiMode             As Boolean
+    hScreenDC           As Long
+    hMemDC              As Long
+    hDib                As Long
+    lpBits              As Long
+    hOldDib             As Long
 #If ImplConsole Then
     ConsoleCtx          As UcsConsoleContext
 #End If
@@ -2541,15 +2557,16 @@ Attribute TimerProc.VB_MemberFlags = "40"
     #If ImplConsole Then
         hProcess = m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess
     #End If
-    If hProcess = 0 And m_uCaptureCtx.Duplication Is Nothing Then
+If hProcess = 0 And m_uCaptureCtx.Duplication Is Nothing And Not m_uCaptureCtx.GdiMode Then
         frCaptureSetupDeviceIndex
     End If
     #If ImplConsole Then
         hProcess = m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess
     #End If
-    If hProcess <> 0 Or Not m_uCaptureCtx.Duplication Is Nothing Then
+If hProcess <> 0 Or Not m_uCaptureCtx.Duplication Is Nothing Or m_uCaptureCtx.GdiMode Then
         m_uCaptureFrame.NumTiles = 0
         m_uCaptureFrame.NumMoveRects = 0
+        m_uCaptureFrame.PointerShapeBufferSize = 0
         m_uCaptureFrame.PointerShapeBufferSize = 0
         If pvCaptureFrame(m_uCaptureCtx, m_uCaptureFrame) Then
             For Each oConn In m_cConnections
@@ -2595,7 +2612,7 @@ Friend Function frNotifySendFrame(uCaptureFrame As UcsCaptureFrame) As Boolean
         If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
             GoTo QH
         End If
-    ElseIf uCaptureFrame.NumTiles + uCaptureFrame.NumMoveRects + uCaptureFrame.PointerShapeBufferSize = 0 And uCaptureFrame.PointerPosition.Position.X = -1 Then
+    ElseIf uCaptureFrame.NumTiles + uCaptureFrame.NumMoveRects + uCaptureFrame.PointerShapeBufferSize = 0 And uCaptureFrame.PointerPosition.Position.x = -1 Then
         '--- do nothing
     Else
         If m_uSendBuffer(ucsChaFrame).Paused And m_uSendBuffer(ucsChaFrame).Size > LNG_MAX_BUFFER_SIZE Then
@@ -2694,7 +2711,7 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
     Const FUNC_NAME     As String = "pvCaptureInit"
     Dim IID_IDXGIFactory1 As VBD3D11.VBGUID
     Dim hDesktop        As Long
-    Dim hDC             As Long
+    Dim hdc             As Long
     Dim pFactory        As IDXGIFactory1
     Dim lIdx            As Long
     Dim lJdx            As Long
@@ -2743,11 +2760,11 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
                 GoTo QH
             End If
         #End If
-        hDC = CreateDC(0, StrPtr(sDeviceName), 0, 0)
-        If hDC <> 0 Then
-            .Width = GetDeviceCaps(hDC, DESKTOPHORZRES)
-            .Height = GetDeviceCaps(hDC, DESKTOPVERTRES)
-            Call DeleteDC(hDC)
+        hdc = CreateDC(0, StrPtr(sDeviceName), 0, 0)
+        If hdc <> 0 Then
+            .Width = GetDeviceCaps(hdc, DESKTOPHORZRES)
+            .Height = GetDeviceCaps(hdc, DESKTOPVERTRES)
+            Call DeleteDC(hdc)
         Else
             .Width = GetSystemMetrics(SM_CXSCREEN)
             .Height = GetSystemMetrics(SM_CYSCREEN)
@@ -2785,7 +2802,7 @@ Continue:
             Next
         Next
         If pOutput Is Nothing Then
-            GoTo QH
+            GoTo TryGdi
         End If
         .DeviceName = Replace(uOutputDesc.DeviceName, vbNullChar, vbNullString)
         '--- convert logical to physical coordinates (undo DPI scaling)
@@ -2793,16 +2810,16 @@ Continue:
         .Top = uOutputDesc.DesktopCoordinates.Top * .Height \ (uOutputDesc.DesktopCoordinates.Bottom - uOutputDesc.DesktopCoordinates.Top)
         .Timeout = lTimeout
         hResult = D3D11CreateDevice(pAdapter, D3D_DRIVER_TYPE_UNKNOWN, 0, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, ByVal 0, 0, D3D11_SDK_VERSION, pD3D11Device, 0, .Context)
-        If hResult < 0 Then
-            Err.Raise hResult, "D3D11CreateDevice"
+If hResult < 0 Then
+            GoTo TryGdi
         End If
         Call D3DKMTSetProcessSchedulingPriorityClass(GetCurrentProcess(), D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME)
         Set pDXGIDevice = pD3D11Device
         pDXGIDevice.SetGPUThreadPriority 7
         pDXGIDevice.SetMaximumFrameLatency 1
         hResult = pOutput.DuplicateOutput(pD3D11Device, .Duplication)
-        If hResult < 0 Then
-            GoTo QH
+If hResult < 0 Then
+            GoTo TryGdi
         End If
         .Duplication.GetDesc uDuplDesc
         .InSystemMemory = (uDuplDesc.DesktopImageInSystemMemory <> 0)
@@ -2822,20 +2839,83 @@ Continue:
         End With
         Set .StageTexture = pD3D11Device.CreateTexture2D(uTextureDesc, ByVal 0)
         hResult = .Context.Map(.StageTexture, 0, D3D11_MAP_READ, 0, uResource)
-        If hResult < 0 Then
-            Err.Raise hResult, "ID3D11DeviceContext.Map"
+If hResult < 0 Then
+            GoTo TryGdi
         End If
         .Pitch = uResource.RowPitch
         .Stride = uResource.RowPitch / IIf(uDuplDesc.ModeDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT, 8, 4)
         .Context.Unmap .StageTexture, 0
     End With
     '--- success
-    pvCaptureInit = True
+pvCaptureInit = True
+    GoTo QH
+TryGdi:
+    pvCaptureInit = pvCaptureInitGdi(uCtx)
 QH:
     Exit Function
 EH:
     PrintError FUNC_NAME
 End Function
+'--- init GDI fallback capture (sem DXGI)
+Private Function pvCaptureInitGdi(uCtx As UcsCaptureContext) As Boolean
+    Const FUNC_NAME     As String = "pvCaptureInitGdi"
+    Const DIB_RGB_COLORS As Long = 0
+    Dim uBmpHeader      As BITMAPINFOHEADER
+
+    On Error GoTo EH
+    Call pvCaptureTerminateGdi(uCtx)
+    With uCtx
+        If .Width = 0 Or .Height = 0 Then
+            .Width = GetSystemMetrics(SM_CXSCREEN)
+            .Height = GetSystemMetrics(SM_CYSCREEN)
+        End If
+        .hScreenDC = GetDC(0)
+        .hMemDC = CreateCompatibleDC(.hScreenDC)
+        With uBmpHeader
+            .biSize = LenB(uBmpHeader)
+            .biPlanes = 1
+            .biBitCount = 32
+            .biWidth = uCtx.Width
+            .biHeight = -uCtx.Height
+            .biSizeImage = (4 * uCtx.Width) * uCtx.Height
+        End With
+        .hDib = CreateDIBSection(.hMemDC, uBmpHeader, DIB_RGB_COLORS, .lpBits, 0, 0)
+        If .hDib <> 0 Then
+            .hOldDib = SelectObject(.hMemDC, .hDib)
+            .GdiMode = True
+        End If
+    End With
+    '--- success
+    pvCaptureInitGdi = uCtx.GdiMode
+    GoTo QH
+QH:
+    Exit Function
+EH:
+    PrintError FUNC_NAME
+End Function
+
+'--- libera objetos GDI do fallback
+Private Sub pvCaptureTerminateGdi(uCtx As UcsCaptureContext)
+    With uCtx
+        If .hOldDib <> 0 Then
+            Call SelectObject(.hMemDC, .hOldDib)
+            .hOldDib = 0
+        End If
+        If .hDib <> 0 Then
+            Call DeleteObject(.hDib)
+            .hDib = 0
+        End If
+        If .hMemDC <> 0 Then
+            Call DeleteDC(.hMemDC)
+            .hMemDC = 0
+        End If
+        If .hScreenDC <> 0 Then
+            Call ReleaseDC(0, .hScreenDC)
+            .hScreenDC = 0
+        End If
+        .GdiMode = False
+    End With
+End Sub
 
 Private Function pvCaptureFrame(uCtx As UcsCaptureContext, uFrame As UcsCaptureFrame) As Boolean
     Const FUNC_NAME     As String = "pvCaptureFrame"
@@ -2853,6 +2933,26 @@ Private Function pvCaptureFrame(uCtx As UcsCaptureContext, uFrame As UcsCaptureF
 
     On Error GoTo EH
     With uCtx
+        If .GdiMode Then
+            Call BitBlt(.hMemDC, 0, 0, .Width, .Height, .hScreenDC, 0, 0, vbSrcCopy)
+With uFrame
+                .NumMoveRects = 0
+                .NumDirtyRects = 1
+                ReDim .DirtyRects(0 To 0) As D3D11_RECT
+                ReDim .DirtyBuffers(0 To 0) As UcsBuffer
+                ReDim .MoveRects(0 To 0) As DXGI_OUTDUPL_MOVE_RECT
+                ReDim .PointerShape(0 To 4095) As Byte
+                ReDim .Tiles(0 To 127) As UcsCaptureTile
+                .DirtyRects(0).Right = uCtx.Width
+                .DirtyRects(0).Bottom = uCtx.Height
+                .PointerShapeBufferSize = 0
+                .PointerPosition.Position.x = -1
+                lSize = uCtx.Width * 4
+                pvBufferWriteBlob .DirtyBuffers(0), uCtx.lpBits, uCtx.Height * lSize
+            End With
+            pvCaptureFrame = pvCapturePrepareTiles(uFrame)
+            GoTo QH
+        End If
         #If ImplConsole Then
             If .Duplication Is Nothing And .ConsoleCtx.ProcessInfo.hProcess <> 0 Then
                 If pvConsoleRender(.ConsoleCtx) Then
@@ -3053,11 +3153,11 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
         #End If
         pvArrayAllocate baRow, (LNG_TILE_SIZE + 1) * 4, FUNC_NAME & ".baRow"
         '--- send pointer
-        If .PointerPosition.Position.X >= 0 And pvHasSupport(rfbEncPsPointerPosition) Then
+        If .PointerPosition.Position.x >= 0 And pvHasSupport(rfbEncPsPointerPosition) Then
             If .PointerPosition.Visible Then
-                lX = .PointerPosition.Position.X + .PointerInfo.HotSpot.X
-                lY = .PointerPosition.Position.Y + .PointerInfo.HotSpot.Y
-                .PointerPosition.Position.X = -1
+                lX = .PointerPosition.Position.x + .PointerInfo.HotSpot.x
+                lY = .PointerPosition.Position.y + .PointerInfo.HotSpot.y
+                .PointerPosition.Position.x = -1
             Else
                 lX = -1
             End If
@@ -3079,8 +3179,8 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                 End With
                 pvBufferWriteBlob uOutput, VarPtr(uUpdate), sizeof_RfbServerFramebufferUpdate
                 With uRectangle
-                    .XPosition = pvNetworkShort(uFrame.PointerInfo.HotSpot.X)
-                    .YPosition = pvNetworkShort(uFrame.PointerInfo.HotSpot.Y)
+                    .XPosition = pvNetworkShort(uFrame.PointerInfo.HotSpot.x)
+                    .YPosition = pvNetworkShort(uFrame.PointerInfo.HotSpot.y)
                     .Width = pvNetworkShort(uFrame.PointerInfo.Width)
                     .Height = pvNetworkShort(uFrame.PointerInfo.Height)
                     If uFrame.PointerInfo.Type = DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR And pvHasSupport(rfbEncPsCursorWithAlpha) Then
@@ -3159,8 +3259,8 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
             End With
             uRectangle.EncodingType = pvNetworkLong(rfbEncCopyRect)
             pvBufferWriteBlob uOutput, VarPtr(uRectangle), sizeof_RfbServerRectangle
-            pvBufferWriteLong uOutput, .MoveRects(lIdx).SourcePoint.X, Size:=2
-            pvBufferWriteLong uOutput, .MoveRects(lIdx).SourcePoint.Y, Size:=2
+            pvBufferWriteLong uOutput, .MoveRects(lIdx).SourcePoint.x, Size:=2
+            pvBufferWriteLong uOutput, .MoveRects(lIdx).SourcePoint.y, Size:=2
         Next
         For lIdx = 0 To .NumTiles - 1
             #If ImplUseDebugLog Then
@@ -3594,7 +3694,7 @@ Private Function pvConsoleRender(uCtx As UcsConsoleContext) As Boolean
         If GetConsoleScreenBufferInfo(.hConOut, .ScreenInfo) = 0 Then
             Exit Function
         End If
-        bDirty = uPrevScreen.dwCursorPosition.X <> .ScreenInfo.dwCursorPosition.X Or uPrevScreen.dwCursorPosition.Y <> .ScreenInfo.dwCursorPosition.Y
+        bDirty = uPrevScreen.dwCursorPosition.x <> .ScreenInfo.dwCursorPosition.x Or uPrevScreen.dwCursorPosition.y <> .ScreenInfo.dwCursorPosition.y
         uPrevInfo = .CharInfo
         uRegion.Right = LNG_CONSOLE_COLS - 1
         uRegion.Bottom = LNG_CONSOLE_ROWS - 1
@@ -3605,7 +3705,7 @@ Private Function pvConsoleRender(uCtx As UcsConsoleContext) As Boolean
             For lCol = 0 To LNG_CONSOLE_COLS - 1
                 lIdx = lRow * LNG_CONSOLE_COLS + lCol
                 If uPrevInfo(lIdx).UnicodeChar <> .CharInfo(lIdx).UnicodeChar Or uPrevInfo(lIdx).Attributes <> .CharInfo(lIdx).Attributes _
-                        Or bDirty And uPrevScreen.dwCursorPosition.X = lCol And uPrevScreen.dwCursorPosition.Y = lRow Then
+                        Or bDirty And uPrevScreen.dwCursorPosition.x = lCol And uPrevScreen.dwCursorPosition.y = lRow Then
                     lAttr = .CharInfo(lIdx).Attributes
                     lFg = m_aColors(lAttr And &HF)
                     lBg = m_aColors((lAttr \ &H10) And &HF)
@@ -3628,9 +3728,9 @@ Private Function pvConsoleRender(uCtx As UcsConsoleContext) As Boolean
             Next
         Next
         If bDirty Then
-            uRect.Left = .ScreenInfo.dwCursorPosition.X * .CellWidth
+            uRect.Left = .ScreenInfo.dwCursorPosition.x * .CellWidth
             uRect.Right = uRect.Left + .CellWidth
-            uRect.Bottom = (.ScreenInfo.dwCursorPosition.Y + 1) * .CellHeight
+            uRect.Bottom = (.ScreenInfo.dwCursorPosition.y + 1) * .CellHeight
             uRect.Top = uRect.Bottom - 2
             hBrush = CreateSolidBrush(m_aColors(7))
             Call FillRect(.hMemDC, uRect, hBrush)
@@ -4449,7 +4549,7 @@ Private Sub m_oSocket_OnAccept()
     If Not m_oSocket.Accept(oSocket) Then
         GoTo QH
     End If
-    If m_cConnections.Count = 0 Or m_uCaptureCtx.Duplication Is Nothing Then
+If m_cConnections.Count = 0 Or (m_uCaptureCtx.Duplication Is Nothing And Not m_uCaptureCtx.GdiMode) Then
         frCaptureSetupDeviceIndex
     End If
     Set oConn = New cVncServer
@@ -4581,12 +4681,12 @@ End Function
 
 Private Function pvThunkIdeOwner(hIdeOwner As Long) As Boolean
     #If Not ImplNoIdeProtection Then
-        Dim lProcessId      As Long
+        Dim lProcessID      As Long
         
         Do
             hIdeOwner = FindWindowEx(0, hIdeOwner, StrPtr("IDEOwner"), 0)
-            Call GetWindowThreadProcessId(hIdeOwner, lProcessId)
-        Loop While hIdeOwner <> 0 And lProcessId <> GetCurrentProcessId()
+            Call GetWindowThreadProcessId(hIdeOwner, lProcessID)
+        Loop While hIdeOwner <> 0 And lProcessID <> GetCurrentProcessId()
     #End If
     pvThunkIdeOwner = True
 End Function

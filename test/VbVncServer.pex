@@ -1,0 +1,8 @@
+[Forms]=1
+Form1=5
+[Classes]=1
+cAsyncSocket=2
+cVncServer=2
+cZipArchive=2
+[Modules]=1
+mdGlobals=1
