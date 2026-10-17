@@ -53,11 +53,16 @@ Private Const MOUSEEVENTF_RIGHTUP           As Long = &H10
 Private Const MOUSEEVENTF_MIDDLEDOWN        As Long = &H20
 Private Const MOUSEEVENTF_MIDDLEUP          As Long = &H40
 Private Const MOUSEEVENTF_WHEEL             As Long = &H800
+Private Const MOUSEEVENTF_VIRTUALDESK       As Long = &H4000
 Private Const MOUSEEVENTF_ABSOLUTE          As Long = &H8000&
 '--- for GetSystemMetrics
 Private Const SM_CXSCREEN                   As Long = 0
 Private Const SM_CYSCREEN                   As Long = 1
 Private Const SM_SWAPBUTTON                 As Long = 23
+Private Const SM_XVIRTUALSCREEN             As Long = 76
+Private Const SM_YVIRTUALSCREEN             As Long = 77
+Private Const SM_CXVIRTUALSCREEN            As Long = 78
+Private Const SM_CYVIRTUALSCREEN            As Long = 79
 '--- for RedrawWindow
 Private Const RDW_INVALIDATE                As Long = &H1
 Private Const RDW_ALLCHILDREN               As Long = &H80
@@ -765,6 +770,7 @@ Private m_uClientPointerEvent   As RfbClientPointerEvent
 Private m_uClientCutText        As RfbClientCutText
 Private m_uCaptureCtx           As UcsCaptureContext
 Private m_uCaptureFrame         As UcsCaptureFrame
+Private m_bNeedPointerShape     As Boolean
 Private m_pTimer                As IUnknown
 #If ImplZlib Then
     Private m_oZipArchive       As cZipArchive
@@ -819,6 +825,10 @@ Private Type UcsCaptureContext
     Top                 As Long
     Width               As Long
     Height              As Long
+    VirtualLeft         As Long
+    VirtualTop          As Long
+    VirtualWidth        As Long
+    VirtualHeight       As Long
     Timeout             As Long
     Context             As ID3D11DeviceContext
     Duplication         As IDXGIOutputDuplication
@@ -1493,6 +1503,7 @@ Private Function pvHandleClientMessage(uInput As UcsBuffer) As Boolean
             End With
             .Pos = .Pos + sizeof_RfbClientFramebufferUpdateRequest
             If m_uClientFramebufferUpdate.Incremental = 0 Then
+                m_bNeedPointerShape = True
                 Call RedrawWindow(0, ByVal 0, 0, RDW_INVALIDATE Or RDW_ALLCHILDREN)
                 #If ImplZlib Then
                     If Not m_oZipArchive Is Nothing And m_uClientEncodings.PrefEncoding = rfbEncTight Then
@@ -1859,6 +1870,8 @@ Private Function pvHandlePointerEvent(ByVal lLeft As Long, ByVal lTop As Long, u
     Const LNG_BUTTON5   As Long = 2 ^ 4
     Dim lWidth          As Long
     Dim lHeight         As Long
+    Dim lVirtualLeft    As Long
+    Dim lVirtualTop     As Long
     Dim lFlags          As Long
     Dim lWheel          As Long
     
@@ -1871,6 +1884,12 @@ Private Function pvHandlePointerEvent(ByVal lLeft As Long, ByVal lTop As Long, u
     #End If
     lWidth = GetSystemMetrics(SM_CXSCREEN)
     lHeight = GetSystemMetrics(SM_CYSCREEN)
+    If pvParent.frCaptureGetVirtualDesk(lVirtualLeft, lVirtualTop, lWidth, lHeight) Then
+        '--- normalize to virtual desktop so secondary monitors are reachable
+        lLeft = lLeft - lVirtualLeft
+        lTop = lTop - lVirtualTop
+        lFlags = MOUSEEVENTF_VIRTUALDESK
+    End If
     If GetSystemMetrics(SM_SWAPBUTTON) = 0 Then
         LNG_BUTTON1 = 2 ^ 0
         LNG_BUTTON3 = 2 ^ 2
@@ -1879,7 +1898,7 @@ Private Function pvHandlePointerEvent(ByVal lLeft As Long, ByVal lTop As Long, u
         LNG_BUTTON3 = 2 ^ 0
     End If
     With uEvent
-        lFlags = MOUSEEVENTF_ABSOLUTE Or MOUSEEVENTF_MOVE
+        lFlags = lFlags Or MOUSEEVENTF_ABSOLUTE Or MOUSEEVENTF_MOVE
         If (.ButtonMask And LNG_BUTTON1) <> (m_uClientPointerEvent.ButtonMask And LNG_BUTTON1) Then
             lFlags = lFlags Or IIf((.ButtonMask And LNG_BUTTON1) <> 0, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP)
         End If
@@ -2595,7 +2614,7 @@ Friend Function frNotifySendFrame(uCaptureFrame As UcsCaptureFrame) As Boolean
         If Not pvSendEmptyFramebufferUpdate(m_uSendBuffer(ucsChaFrame)) Then
             GoTo QH
         End If
-    ElseIf uCaptureFrame.NumTiles + uCaptureFrame.NumMoveRects + uCaptureFrame.PointerShapeBufferSize = 0 And uCaptureFrame.PointerPosition.Position.X = -1 Then
+    ElseIf uCaptureFrame.NumTiles + uCaptureFrame.NumMoveRects = 0 And uCaptureFrame.PointerPosition.Position.X = -1 And Not pvCaptureNeedPointerShape(uCaptureFrame) Then
         '--- do nothing
     Else
         If m_uSendBuffer(ucsChaFrame).Paused And m_uSendBuffer(ucsChaFrame).Size > LNG_MAX_BUFFER_SIZE Then
@@ -2645,6 +2664,21 @@ Friend Sub frCaptureSetupDeviceIndex(Optional ByVal Rotate As Long)
         Next
     End If
 End Sub
+
+Friend Function frCaptureGetVirtualDesk(lLeft As Long, lTop As Long, lWidth As Long, lHeight As Long) As Boolean
+    With m_uCaptureCtx
+        If .VirtualWidth <= 1 Or .VirtualHeight <= 1 Then
+            GoTo QH
+        End If
+        lLeft = .VirtualLeft
+        lTop = .VirtualTop
+        lWidth = .VirtualWidth
+        lHeight = .VirtualHeight
+    End With
+    '--- success
+    frCaptureGetVirtualDesk = True
+QH:
+End Function
 
 Private Function pvCaptureEnumDevices() As Collection
     Const FUNC_NAME     As String = "pvCaptureEnumDevices"
@@ -2702,6 +2736,8 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
     Dim pOutput         As IDXGIOutput1
     Dim uOutputDesc     As DXGI_OUTPUT_DESC
     Dim hResult         As Long
+    Dim lLogicalWidth   As Long
+    Dim lLogicalHeight  As Long
     Dim pD3D11Device    As ID3D11Device
     Dim pDXGIDevice     As IDXGIDevice1
     Dim uTextureDesc    As D3D11_TEXTURE2D_DESC
@@ -2723,6 +2759,10 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
         Set .Context = Nothing
         .Left = 0
         .Top = 0
+        .VirtualLeft = 0
+        .VirtualTop = 0
+        .VirtualWidth = 0
+        .VirtualHeight = 0
         #If ImplConsole Then
             If sDeviceName = "Console" Then
                 If .ConsoleCtx.ProcessInfo.hProcess <> 0 Then
@@ -2789,8 +2829,15 @@ Continue:
         End If
         .DeviceName = Replace(uOutputDesc.DeviceName, vbNullChar, vbNullString)
         '--- convert logical to physical coordinates (undo DPI scaling)
-        .Left = uOutputDesc.DesktopCoordinates.Left * .Width \ (uOutputDesc.DesktopCoordinates.Right - uOutputDesc.DesktopCoordinates.Left)
-        .Top = uOutputDesc.DesktopCoordinates.Top * .Height \ (uOutputDesc.DesktopCoordinates.Bottom - uOutputDesc.DesktopCoordinates.Top)
+        lLogicalWidth = uOutputDesc.DesktopCoordinates.Right - uOutputDesc.DesktopCoordinates.Left
+        lLogicalHeight = uOutputDesc.DesktopCoordinates.Bottom - uOutputDesc.DesktopCoordinates.Top
+        .Left = uOutputDesc.DesktopCoordinates.Left * .Width \ lLogicalWidth
+        .Top = uOutputDesc.DesktopCoordinates.Top * .Height \ lLogicalHeight
+        '--- virtual desktop in the same physical coordinates
+        .VirtualLeft = GetSystemMetrics(SM_XVIRTUALSCREEN) * .Width \ lLogicalWidth
+        .VirtualTop = GetSystemMetrics(SM_YVIRTUALSCREEN) * .Height \ lLogicalHeight
+        .VirtualWidth = GetSystemMetrics(SM_CXVIRTUALSCREEN) * .Width \ lLogicalWidth
+        .VirtualHeight = GetSystemMetrics(SM_CYVIRTUALSCREEN) * .Height \ lLogicalHeight
         .Timeout = lTimeout
         hResult = D3D11CreateDevice(pAdapter, D3D_DRIVER_TYPE_UNKNOWN, 0, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, ByVal 0, 0, D3D11_SDK_VERSION, pD3D11Device, 0, .Context)
         If hResult < 0 Then
@@ -3065,7 +3112,8 @@ Private Function pvCaptureSend(uFrame As UcsCaptureFrame, uOutput As UcsBuffer) 
                 GoTo QH
             End If
         End If
-        If .PointerShapeBufferSize > 0 And pvHasSupport(rfbEncPsCursor) Then
+        If pvCaptureNeedPointerShape(uFrame) Then
+            m_bNeedPointerShape = False
             Select Case .PointerInfo.Type
             Case DXGI_OUTDUPL_POINTER_SHAPE_TYPE_COLOR, DXGI_OUTDUPL_POINTER_SHAPE_TYPE_MONOCHROME
                 lPitch = ((.PointerInfo.Width + 7) \ 8)
@@ -3355,6 +3403,19 @@ QH:
     Exit Function
 EH:
     PrintError FUNC_NAME
+End Function
+
+Private Function pvCaptureNeedPointerShape(uFrame As UcsCaptureFrame) As Boolean
+    If Not pvHasSupport(rfbEncPsCursor) Then
+        GoTo QH
+    End If
+    '--- new shape captured or replay last known shape after full update request
+    If uFrame.PointerShapeBufferSize > 0 Then
+        pvCaptureNeedPointerShape = True
+    ElseIf m_bNeedPointerShape And uFrame.PointerSize > 0 Then
+        pvCaptureNeedPointerShape = True
+    End If
+QH:
 End Function
 
 Private Function pvCapturePrepareTiles(uFrame As UcsCaptureFrame) As Boolean
