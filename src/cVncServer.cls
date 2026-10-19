@@ -111,6 +111,8 @@ Private Const INPUT_KEYBOARD                As Long = 1
 '--- for GetDeviceCaps
 Private Const DESKTOPVERTRES                As Long = 117
 Private Const DESKTOPHORZRES                As Long = 118
+'--- for DispCallFunc
+Private Const CC_STDCALL                    As Long = 4
 '--- for thunks
 Private Const MEM_COMMIT                    As Long = &H1000
 Private Const PAGE_EXECUTE_READWRITE        As Long = &H40
@@ -137,6 +139,10 @@ Private Declare Function MultiByteToWideChar Lib "kernel32" (ByVal CodePage As L
 Private Declare Function GetSystemDefaultLCID Lib "kernel32" () As Long
 Private Declare Function CreateFile Lib "kernel32" Alias "CreateFileW" (ByVal lpFileName As Long, ByVal dwDesiredAccess As Long, ByVal dwShareMode As Long, ByVal lpSecurityAttributes As Long, ByVal dwCreationDisposition As Long, ByVal dwFlagsAndAttributes As Long, ByVal hTemplateFile As Long) As Long
 Private Declare Function CloseHandle Lib "kernel32" (ByVal hObject As Long) As Long
+Private Declare Function GetModuleHandle Lib "kernel32" Alias "GetModuleHandleW" (ByVal lpModuleName As Long) As Long
+Private Declare Function LoadLibraryEx Lib "kernel32" Alias "LoadLibraryExW" (ByVal lpLibFileName As Long, ByVal hFile As Long, ByVal dwFlags As Long) As Long
+Private Declare Function GetProcAddress Lib "kernel32" (ByVal hModule As Long, ByVal lpProcName As String) As Long
+Private Declare Function APIGetSystemDirectory Lib "kernel32" Alias "GetSystemDirectoryW" (ByVal lpBuffer As Long, ByVal uSize_ As Long) As Long
 '--- user32/gdi32
 Private Declare Sub mouse_event Lib "user32" (ByVal dwFlags As Long, ByVal dx As Long, ByVal dy As Long, ByVal cButtons As Long, ByVal dwExtraInfo As Long)
 Private Declare Function SendInput Lib "user32" (ByVal nInputs As Long, pInputs As Any, ByVal cbSize As Long) As Long
@@ -188,8 +194,6 @@ Private Declare Function IPropertyBag2_Write_Proxy Lib "windowscodecs" (ByVal pP
     '--- for thunks
     Private Declare Function VirtualAlloc Lib "kernel32" (ByVal lpAddress As Long, ByVal dwSize As Long, ByVal flAllocationType As Long, ByVal flProtect As Long) As Long
     Private Declare Function CallWindowProc Lib "user32" Alias "CallWindowProcW" (ByVal lpPrevWndFunc As Long, ByVal hWnd As Long, ByVal Msg As Long, ByVal wParam As Long, ByVal lParam As Long) As Long
-    Private Declare Function GetModuleHandle Lib "kernel32" Alias "GetModuleHandleW" (ByVal lpModuleName As Long) As Long
-    Private Declare Function GetProcAddress Lib "kernel32" (ByVal hModule As Long, ByVal lpProcName As String) As Long
     Private Declare Function GetCurrentProcessId Lib "kernel32" () As Long
     #If Not ImplNoIdeProtection Then
         Private Declare Function FindWindowEx Lib "user32" Alias "FindWindowExW" (ByVal hWndParent As Long, ByVal hWndChildAfter As Long, ByVal lpszClass As Long, ByVal lpszWindow As Long) As Long
@@ -232,7 +236,6 @@ Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBD3D11.VBGUID, 
     Private Declare Function CreateJobObject Lib "kernel32" Alias "CreateJobObjectW" (ByVal lpJobAttributes As Long, ByVal lpName As Long) As Long
     Private Declare Function SetInformationJobObject Lib "kernel32" (ByVal hJob As Long, ByVal JobObjectInformationClass As Long, lpJobObjectInformation As Any, ByVal cbJobObjectInformationLength As Long) As Long
     Private Declare Function AssignProcessToJobObject Lib "kernel32" (ByVal hJob As Long, ByVal hProcess As Long) As Long
-    Private Declare Function APIGetSystemDirectory Lib "kernel32" Alias "GetSystemDirectoryW" (ByVal lpBuffer As Long, ByVal uSize_ As Long) As Long
     Private Declare Function WaitForSingleObject Lib "kernel32" (ByVal hHandle As Long, ByVal dwMilliseconds As Long) As Long
     Private Declare Function SetTextColor Lib "gdi32" (ByVal hDC As Long, ByVal crColor As Long) As Long
     Private Declare Function SetBkColor Lib "gdi32" (ByVal hDC As Long, ByVal crColor As Long) As Long
@@ -419,7 +422,7 @@ End Type
 
 Private Type CURSORINFO
     cbSize              As Long
-    flags               As Long
+    dwFlags             As Long
     hCursor             As Long
     ptScreenPosX        As Long
     ptScreenPosY        As Long
@@ -818,6 +821,8 @@ Private m_uClientCutText        As RfbClientCutText
 Private m_uCaptureCtx           As UcsCaptureContext
 Private m_uCaptureFrame         As UcsCaptureFrame
 Private m_bNeedPointerShape     As Boolean
+Private m_pfnSasSend            As Long
+Private m_eSasShift             As ShiftConstants
 Private m_pTimer                As IUnknown
 #If ImplZlib Then
     Private m_oZipArchive       As cZipArchive
@@ -1869,6 +1874,13 @@ End Function
 Private Function pvHandleKeyEvent(uEvent As RfbClientKeyEvent) As Boolean
     Const FUNC_NAME     As String = "pvHandleKeyEvent"
     Const UNICODE_FLAG  As Long = &H1000000
+    Const LOAD_WITH_ALTERED_SEARCH_PATH As Long = &H8
+    Dim sPath           As String
+    Dim hModule         As Long
+    Dim vArg            As Variant
+    Dim vType(0 To 0)   As Integer
+    Dim vPtr(0 To 0)    As Long
+    Dim vRet            As Variant
     Dim uInput          As KEYBOARD_INPUT
     Dim bExtended       As Boolean
     
@@ -1876,6 +1888,41 @@ Private Function pvHandleKeyEvent(uEvent As RfbClientKeyEvent) As Boolean
     #If ImplUseDebugLog Then
 '        DebugLog MODULE_NAME, FUNC_NAME, "uEvent.Key=&H" & Hex$(uEvent.Key) & ", uEvent.DownFlag=" & uEvent.DownFlag
     #End If
+    '--- handle Secure Attention Sequence i.e. Ctrl+Alt+Del (needs uiAccess="true" in application manifest)
+    Select Case uEvent.Key
+    Case &HFFE3&, &HFFE4&       '--- Left Control / Right Control
+        If uEvent.DownFlag <> 0 Then
+            m_eSasShift = m_eSasShift Or vbCtrlMask
+        Else
+            m_eSasShift = m_eSasShift And Not vbCtrlMask
+        End If
+    Case &HFFE9&, &HFFEA&       '--- Left Alt / Right Alt
+        If uEvent.DownFlag <> 0 Then
+            m_eSasShift = m_eSasShift Or vbAltMask
+        Else
+            m_eSasShift = m_eSasShift And Not vbAltMask
+        End If
+    Case &HFFFF&                '--- Delete
+        If uEvent.DownFlag <> 0 And m_eSasShift = vbCtrlMask + vbAltMask Then
+            If m_pfnSasSend = 0 Then
+                sPath = GetSystemDirectory() & "\sas.dll"
+                hModule = GetModuleHandle(StrPtr(sPath))
+                If hModule = 0 Then
+                    hModule = LoadLibraryEx(StrPtr(sPath), 0, LOAD_WITH_ALTERED_SEARCH_PATH)
+                End If
+                m_pfnSasSend = GetProcAddress(hModule, "SendSAS")
+            End If
+            If m_pfnSasSend <> 0 Then
+                vArg = CLng(0)
+                vType(0) = VarType(vArg)
+                vPtr(0) = VarPtr(vArg)
+                Call DispCallFunc(0, m_pfnSasSend, CC_STDCALL, vbEmpty, 1, vType(0), vPtr(0), vRet)
+                '--- success
+                pvHandleKeyEvent = True
+                GoTo QH
+            End If
+        End If
+    End Select
     #If ImplConsole Then
         If pvParent.frConsoleHandleKeyEvent(uEvent) Then
             '--- success
@@ -3227,7 +3274,7 @@ Private Function pvGdiCapturePointer(uCtx As UcsGdiContext, uFrame As UcsCapture
     End If
     lX = uCursor.ptScreenPosX - uCtx.Left
     lY = uCursor.ptScreenPosY - uCtx.Top
-    bVisible = (uCursor.flags And CURSOR_SHOWING) <> 0 And uCursor.hCursor <> 0 _
+    bVisible = (uCursor.dwFlags And CURSOR_SHOWING) <> 0 And uCursor.hCursor <> 0 _
         And lX >= 0 And lX < uCtx.Width And lY >= 0 And lY < uCtx.Height
     '--- shape is captured only when cursor handle changes
     If bVisible And uCursor.hCursor <> uCtx.LastCursor Then
@@ -4317,15 +4364,15 @@ End Sub
 Private Function MakeCoord(ByVal lX As Long, ByVal lY As Long) As Long
     MakeCoord = (lY And &HFFFF&) * &H10000 Or (lX And &HFFFF&)
 End Function
+#End If
+
+'= helpers ===============================================================
 
 Private Function GetSystemDirectory() As String
     GetSystemDirectory = String$(1024, 0)
     Call APIGetSystemDirectory(StrPtr(GetSystemDirectory), Len(GetSystemDirectory))
     GetSystemDirectory = Replace(GetSystemDirectory, vbNullChar, vbNullString)
 End Function
-#End If
-
-'= helpers ===============================================================
 
 Private Sub pvInitTightCapabilities(uCaps() As RfbTightCapability, sInit As String)
     Dim vSplit          As Variant
@@ -4498,7 +4545,6 @@ Private Function IStream_Seek(pstm As stdole.IUnknown, ByVal cMove As Currency, 
 End Function
 
 Private Function DispCallByVtbl(pUnk As stdole.IUnknown, ByVal lIndex As Long, ParamArray A() As Variant) As Variant
-    Const CC_STDCALL    As Long = 4
     Dim lIdx            As Long
     Dim vParam()        As Variant
     Dim vType(0 To 63)  As Integer
