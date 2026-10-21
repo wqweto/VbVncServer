@@ -111,6 +111,12 @@ Private Const INPUT_KEYBOARD                As Long = 1
 '--- for GetDeviceCaps
 Private Const DESKTOPVERTRES                As Long = 117
 Private Const DESKTOPHORZRES                As Long = 118
+'--- for EnumDisplayDevices
+Private Const DISPLAY_DEVICE_ATTACHED_TO_DESKTOP As Long = &H1
+Private Const DISPLAY_DEVICE_PRIMARY_DEVICE As Long = &H4
+Private Const DISPLAY_DEVICE_MIRRORING_DRIVER As Long = &H8
+'--- for EnumDisplaySettings
+Private Const ENUM_CURRENT_SETTINGS         As Long = -1
 '--- for DispCallFunc
 Private Const CC_STDCALL                    As Long = 4
 '--- for thunks
@@ -221,6 +227,8 @@ Private Declare Function CreateDXGIFactory1 Lib "dxgi" (riid As VBD3D11.VBGUID, 
     Private Declare Function GetObject Lib "gdi32" Alias "GetObjectW" (ByVal hObject As Long, ByVal nCount As Long, lpObject As Any) As Long
     Private Declare Function GetCursorInfo Lib "user32" (pci As CURSORINFO) As Long
     Private Declare Function GetIconInfo Lib "user32" (ByVal hIcon As Long, piconinfo As ICONINFO) As Long
+    Private Declare Function EnumDisplayDevices Lib "user32" Alias "EnumDisplayDevicesW" (ByVal lpDevice As Long, ByVal iDevNum As Long, ByVal lpDisplayDevice As Long, ByVal dwFlags As Long) As Long
+    Private Declare Function EnumDisplaySettings Lib "user32" Alias "EnumDisplaySettingsW" (ByVal lpszDeviceName As Long, ByVal iModeNum As Long, ByVal lpDevMode As Long) As Long
 #End If
 #If ImplConsole Then
     Private Declare Function AllocConsole Lib "kernel32" () As Long
@@ -426,6 +434,41 @@ Private Type CURSORINFO
     hCursor             As Long
     ptScreenPosX        As Long
     ptScreenPosY        As Long
+End Type
+
+Private Type DISPLAY_DEVICE
+    cb                  As Long
+    DeviceName(0 To 63) As Byte
+    DeviceString(0 To 255) As Byte
+    StateFlags          As Long
+    DeviceID(0 To 255)  As Byte
+    DeviceKey(0 To 255) As Byte
+End Type
+
+Private Type DEVMODE
+    dmDeviceName(0 To 63) As Byte
+    dmSpecVersion       As Integer
+    dmDriverVersion     As Integer
+    dmSize              As Integer
+    dmDriverExtra       As Integer
+    dmFields            As Long
+    dmPositionX         As Long
+    dmPositionY         As Long
+    dmDisplayOrientation As Long
+    dmDisplayFixedOutput As Long
+    dmColor             As Integer
+    dmDuplex            As Integer
+    dmYResolution       As Integer
+    dmTTOption          As Integer
+    dmCollate           As Integer
+    dmFormName(0 To 63) As Byte
+    dmLogPixels         As Integer
+    dmBitsPerPel        As Long
+    dmPelsWidth         As Long
+    dmPelsHeight        As Long
+    dmDisplayFlags      As Long
+    dmDisplayFrequency  As Long
+    dmReserved(0 To 7)  As Long
 End Type
 
 Private Type JOBOBJECT_EXTENDED_LIMIT_INFORMATION
@@ -798,6 +841,7 @@ Private Const LNG_CONSOLE_ROWS      As Long = 30
 Private Const LNG_GDI_BLOCK         As Long = 64
 Private Const LNG_GDI_INTERVAL      As Long = 40
 Private Const LNG_GDI_RETRY_INTERVAL As Long = 5000
+Private Const ERR_NO_DXGI           As Long = vbObjectError + 1
 
 Private m_cConnections          As Collection
 Private m_sPassword             As String
@@ -913,6 +957,7 @@ Private Type UcsCaptureContext
     Stride              As Long
 #If ImplConsole Then
     ConsoleCtx          As UcsConsoleContext
+    IsConsole           As Boolean
 #End If
 #If ImplGdi Then
     GdiCtx              As UcsGdiContext
@@ -2675,7 +2720,7 @@ Public Function TimerProc() As Long
 Attribute TimerProc.VB_MemberFlags = "40"
     Const FUNC_NAME     As String = "TimerProc"
     Dim oConn           As cVncServer
-    Dim hProcess        As Long
+    Dim bConsoleMode    As Boolean
     Dim bGdiMode        As Boolean
 
     On Error GoTo EH
@@ -2684,9 +2729,9 @@ Attribute TimerProc.VB_MemberFlags = "40"
         oConn.frNotifyBeforeSendFrame
     Next
     #If ImplConsole Then
-        hProcess = m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess
+        bConsoleMode = m_uCaptureCtx.IsConsole And m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess <> 0
     #End If
-    If hProcess = 0 And m_uCaptureCtx.Duplication Is Nothing Then
+    If Not bConsoleMode And m_uCaptureCtx.Duplication Is Nothing Then
         #If ImplGdi Then
             If m_uCaptureCtx.GdiCtx.MemDC = 0 Then
                 frCaptureSetupDeviceIndex
@@ -2698,12 +2743,12 @@ Attribute TimerProc.VB_MemberFlags = "40"
         #End If
     End If
     #If ImplConsole Then
-        hProcess = m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess
+        bConsoleMode = m_uCaptureCtx.IsConsole And m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess <> 0
     #End If
     #If ImplGdi Then
         bGdiMode = (m_uCaptureCtx.GdiCtx.MemDC <> 0)
     #End If
-    If hProcess <> 0 Or Not m_uCaptureCtx.Duplication Is Nothing Or bGdiMode Then
+    If bConsoleMode Or Not m_uCaptureCtx.Duplication Is Nothing Or bGdiMode Then
         m_uCaptureFrame.NumTiles = 0
         m_uCaptureFrame.NumMoveRects = 0
         m_uCaptureFrame.PointerShapeBufferSize = 0
@@ -2717,7 +2762,7 @@ Attribute TimerProc.VB_MemberFlags = "40"
         oConn.frNotifyAfterSendFrame
     Next
     #If ImplConsole Then
-        If m_uCaptureCtx.Duplication Is Nothing And m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess <> 0 Then
+        If m_uCaptureCtx.IsConsole And m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess <> 0 Then
             If WaitForSingleObject(m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess, 0) = 0 Then
                 pvConsoleTerminate m_uCaptureCtx.ConsoleCtx
                 frCaptureSetupDeviceIndex Rotate:=1
@@ -2835,7 +2880,6 @@ End Function
 
 Private Function pvCaptureEnumDevices() As Collection
     Const FUNC_NAME     As String = "pvCaptureEnumDevices"
-    Dim IID_IDXGIFactory1 As VBD3D11.VBGUID
     Dim hResult         As VBHRESULT
     Dim pFactory        As IDXGIFactory1
     Dim lIdx            As Long
@@ -2847,13 +2891,14 @@ Private Function pvCaptureEnumDevices() As Collection
     
     On Error GoTo EH
     Set pvCaptureEnumDevices = New Collection
-    LSet IID_IDXGIFactory1 = IIDFromString(szIID_IDXGIFactory1)
-    hResult = CreateDXGIFactory1(IID_IDXGIFactory1, pFactory)
-    If hResult < 0 Then
+    hResult = pvCreateDXGIFactory1(pFactory)
+    If hResult < 0 And hResult <> ERR_NO_DXGI Then
         Err.Raise hResult, "CreateDXGIFactory1"
     End If
     For lIdx = 0 To 100
-        If pFactory.EnumAdapters1(lIdx, pAdapter) < 0 Then
+        If pFactory Is Nothing Then
+            Exit For
+        ElseIf pFactory.EnumAdapters1(lIdx, pAdapter) < 0 Then
             Exit For
         End If
         pAdapter.GetDesc uAdapterDesc
@@ -2866,6 +2911,11 @@ Private Function pvCaptureEnumDevices() As Collection
                 Replace(uAdapterDesc.Description, vbNullChar, vbNullString))
         Next
     Next
+    #If ImplGdi Then
+        If pvCaptureEnumDevices.Count = 0 Then
+            pvGdiEnumDevices pvCaptureEnumDevices
+        End If
+    #End If
     #If ImplConsole Then
         If pvCaptureEnumDevices.Count = 0 Then
             pvCaptureEnumDevices.Add vbNullString
@@ -2877,9 +2927,19 @@ EH:
     PrintError FUNC_NAME
 End Function
 
+Private Function pvCreateDXGIFactory1(pFactory As IDXGIFactory1) As Long
+    Dim IID_IDXGIFactory1 As VBD3D11.VBGUID
+
+    On Error GoTo EH
+    LSet IID_IDXGIFactory1 = IIDFromString(szIID_IDXGIFactory1)
+    pvCreateDXGIFactory1 = CreateDXGIFactory1(IID_IDXGIFactory1, pFactory)
+    Exit Function
+EH:
+    pvCreateDXGIFactory1 = ERR_NO_DXGI
+End Function
+
 Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As String, ByVal lTimeout As Long) As Boolean
     Const FUNC_NAME     As String = "pvCaptureInit"
-    Dim IID_IDXGIFactory1 As VBD3D11.VBGUID
     Dim hDesktop        As Long
     Dim hDC             As Long
     Dim pFactory        As IDXGIFactory1
@@ -2917,6 +2977,7 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
         .VirtualWidth = 0
         .VirtualHeight = 0
         #If ImplConsole Then
+            .IsConsole = False
             If sDeviceName = "Console" Then
                 #If ImplGdi Then
                     pvGdiTerminate .GdiCtx
@@ -2932,6 +2993,7 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
                     pvCaptureInit = True
                 End If
                 If pvCaptureInit Then
+                    .IsConsole = True
                     .ConsoleCtx.CharInfo(0).UnicodeChar = -1
                     .Width = .ConsoleCtx.BmpWidth
                     .Height = .ConsoleCtx.BmpHeight
@@ -2948,9 +3010,13 @@ Private Function pvCaptureInit(uCtx As UcsCaptureContext, ByVal sDeviceName As S
             .Width = GetSystemMetrics(SM_CXSCREEN)
             .Height = GetSystemMetrics(SM_CYSCREEN)
         End If
-        LSet IID_IDXGIFactory1 = IIDFromString(szIID_IDXGIFactory1)
-        hResult = CreateDXGIFactory1(IID_IDXGIFactory1, pFactory)
-        If hResult < 0 Then
+        hResult = pvCreateDXGIFactory1(pFactory)
+        If hResult = ERR_NO_DXGI Then
+            #If ImplGdi Then
+                pvCaptureInit = pvCaptureInitGdi(uCtx, sDeviceName, hResult)
+            #End If
+            GoTo QH
+        ElseIf hResult < 0 Then
             Err.Raise hResult, "CreateDXGIFactory1"
         End If
         For lIdx = 0 To 100
@@ -3061,6 +3127,9 @@ Private Function pvCaptureInitGdi(uCtx As UcsCaptureContext, ByVal sDeviceName A
     With uCtx
         Set .Duplication = Nothing
         Set .Context = Nothing
+        If LenB(.DeviceName) = 0 Then
+            pvGdiInitDisplay uCtx, sDeviceName
+        End If
         If LenB(.DeviceName) <> 0 Then
             sDeviceName = .DeviceName
         End If
@@ -3068,7 +3137,7 @@ Private Function pvCaptureInitGdi(uCtx As UcsCaptureContext, ByVal sDeviceName A
             GoTo QH
         End If
         '--- no WDDM driver is permanent, other failures (desktop switch, etc.) are transient
-        .GdiCtx.CanRetry = (hResult <> DXGI_ERROR_UNSUPPORTED)
+        .GdiCtx.CanRetry = (hResult <> DXGI_ERROR_UNSUPPORTED And hResult <> ERR_NO_DXGI)
         .GdiCtx.RetryTick = GetTickCount()
         .GdiCtx.Left = .Left
         .GdiCtx.Top = .Top
@@ -3076,6 +3145,86 @@ Private Function pvCaptureInitGdi(uCtx As UcsCaptureContext, ByVal sDeviceName A
     '--- success
     pvCaptureInitGdi = True
 QH:
+End Function
+
+Private Sub pvGdiEnumDevices(cDevices As Collection)
+    Dim uDevice         As DISPLAY_DEVICE
+    Dim lIdx            As Long
+
+    uDevice.cb = LenB(uDevice)
+    For lIdx = 0 To 100
+        If EnumDisplayDevices(0, lIdx, VarPtr(uDevice), 0) = 0 Then
+            Exit For
+        End If
+        If (uDevice.StateFlags And (DISPLAY_DEVICE_ATTACHED_TO_DESKTOP Or DISPLAY_DEVICE_MIRRORING_DRIVER)) = DISPLAY_DEVICE_ATTACHED_TO_DESKTOP Then
+            cDevices.Add Array(pvGdiToString(uDevice.DeviceName), pvGdiToString(uDevice.DeviceString))
+        End If
+    Next
+End Sub
+
+Private Sub pvGdiInitDisplay(uCtx As UcsCaptureContext, ByVal sDeviceName As String)
+    Dim uDevice         As DISPLAY_DEVICE
+    Dim uMode           As DEVMODE
+    Dim lIdx            As Long
+    Dim sName           As String
+    Dim lCount          As Long
+    Dim lRight          As Long
+    Dim lBottom         As Long
+    Dim bMatch          As Boolean
+
+    uDevice.cb = LenB(uDevice)
+    uMode.dmSize = LenB(uMode)
+    With uCtx
+        For lIdx = 0 To 100
+            If EnumDisplayDevices(0, lIdx, VarPtr(uDevice), 0) = 0 Then
+                Exit For
+            End If
+            If (uDevice.StateFlags And (DISPLAY_DEVICE_ATTACHED_TO_DESKTOP Or DISPLAY_DEVICE_MIRRORING_DRIVER)) <> DISPLAY_DEVICE_ATTACHED_TO_DESKTOP Then
+                GoTo Continue
+            End If
+            sName = pvGdiToString(uDevice.DeviceName)
+            If EnumDisplaySettings(StrPtr(sName), ENUM_CURRENT_SETTINGS, VarPtr(uMode)) = 0 Then
+                GoTo Continue
+            End If
+            '--- virtual desktop is the union of all attached displays
+            If lCount = 0 Or uMode.dmPositionX < .VirtualLeft Then
+                .VirtualLeft = uMode.dmPositionX
+            End If
+            If lCount = 0 Or uMode.dmPositionY < .VirtualTop Then
+                .VirtualTop = uMode.dmPositionY
+            End If
+            If lCount = 0 Or uMode.dmPositionX + uMode.dmPelsWidth > lRight Then
+                lRight = uMode.dmPositionX + uMode.dmPelsWidth
+            End If
+            If lCount = 0 Or uMode.dmPositionY + uMode.dmPelsHeight > lBottom Then
+                lBottom = uMode.dmPositionY + uMode.dmPelsHeight
+            End If
+            lCount = lCount + 1
+            '--- no device name selects primary display
+            If LenB(sDeviceName) = 0 Then
+                bMatch = (uDevice.StateFlags And DISPLAY_DEVICE_PRIMARY_DEVICE) <> 0
+            Else
+                bMatch = sName Like sDeviceName
+            End If
+            If bMatch And LenB(.DeviceName) = 0 Then
+                .DeviceName = sName
+                .Left = uMode.dmPositionX
+                .Top = uMode.dmPositionY
+                .Width = uMode.dmPelsWidth
+                .Height = uMode.dmPelsHeight
+            End If
+Continue:
+        Next
+        If lCount > 0 Then
+            .VirtualWidth = lRight - .VirtualLeft
+            .VirtualHeight = lBottom - .VirtualTop
+        End If
+    End With
+End Sub
+
+Private Function pvGdiToString(baBuffer() As Byte) As String
+    pvGdiToString = baBuffer
+    pvGdiToString = Left$(pvGdiToString, InStr(pvGdiToString & vbNullChar, vbNullChar) - 1)
 End Function
 
 Private Function pvGdiInit(uCtx As UcsGdiContext, ByVal sDeviceName As String, ByVal lWidth As Long, ByVal lHeight As Long) As Boolean
@@ -3455,7 +3604,7 @@ Private Function pvCaptureFrame(uCtx As UcsCaptureContext, uFrame As UcsCaptureF
     On Error GoTo EH
     With uCtx
         #If ImplConsole Then
-            If .Duplication Is Nothing And .ConsoleCtx.ProcessInfo.hProcess <> 0 Then
+            If .IsConsole And .ConsoleCtx.ProcessInfo.hProcess <> 0 Then
                 If pvConsoleRender(.ConsoleCtx) Then
                     Call GdiFlush
                     With uFrame
@@ -4047,7 +4196,7 @@ Friend Function frConsoleHandleKeyEvent(uEvent As RfbClientKeyEvent) As Boolean
     Dim nMask           As Integer
     
     On Error GoTo EH
-    If m_uCaptureCtx.Duplication Is Nothing And m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess <> 0 Then
+    If m_uCaptureCtx.IsConsole And m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess <> 0 Then
         If pvMapToVirtualKey(uEvent.Key, nVk, bExtended) Then
             Select Case nVk
             Case VK_LSHIFT, VK_RSHIFT
@@ -4092,7 +4241,7 @@ End Function
 Friend Function frConsoleHandlePointerEvent(uEvent As RfbClientPointerEvent) As Boolean
     Const LNG_BUTTON3       As Long = 2 ^ 2
     
-    If m_uCaptureCtx.Duplication Is Nothing And m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess <> 0 Then
+    If m_uCaptureCtx.IsConsole And m_uCaptureCtx.ConsoleCtx.ProcessInfo.hProcess <> 0 Then
         If (uEvent.ButtonMask And LNG_BUTTON3) <> (m_uClientPointerEvent.ButtonMask And LNG_BUTTON3) Then
             If (uEvent.ButtonMask And LNG_BUTTON3) <> 0 Then
                 If Clipboard.GetFormat(vbCFText) Then
